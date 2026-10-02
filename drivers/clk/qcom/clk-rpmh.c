@@ -878,6 +878,23 @@ static const struct clk_rpmh_desc clk_rpmh_qcs615 = {
 	.num_clks = ARRAY_SIZE(qcs615_rpmh_clocks),
 };
 
+/* TUNA resources verified against the captured command database. */
+static struct clk_hw *tuna_rpmh_clocks[] = {
+	[RPMH_CXO_CLK] = &clk_rpmh_bi_tcxo_div2.hw,
+	[RPMH_CXO_CLK_A] = &clk_rpmh_bi_tcxo_div2_ao.hw,
+	[RPMH_LN_BB_CLK1] = &clk_rpmh_clk6_a2.hw,
+	[RPMH_LN_BB_CLK1_A] = &clk_rpmh_clk6_a2_ao.hw,
+	[RPMH_LN_BB_CLK2] = &clk_rpmh_clk7_a2.hw,
+	[RPMH_LN_BB_CLK2_A] = &clk_rpmh_clk7_a2_ao.hw,
+	[RPMH_LN_BB_CLK3] = &clk_rpmh_clk8_a2.hw,
+	[RPMH_LN_BB_CLK3_A] = &clk_rpmh_clk8_a2_ao.hw,
+};
+
+static const struct clk_rpmh_desc clk_rpmh_tuna = {
+	.clks = tuna_rpmh_clocks,
+	.num_clks = ARRAY_SIZE(tuna_rpmh_clocks),
+};
+
 static struct clk_hw *sm8750_rpmh_clocks[] = {
 	[RPMH_CXO_CLK]		= &clk_rpmh_bi_tcxo_div2.hw,
 	[RPMH_CXO_CLK_A]	= &clk_rpmh_bi_tcxo_div2_ao.hw,
@@ -1099,6 +1116,7 @@ static int clk_rpmh_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id clk_rpmh_match_table[] = {
+	{ .compatible = "qcom,tuna-rpmh-clk", .data = &clk_rpmh_tuna },
 	{ .compatible = "qcom,eliza-rpmh-clk", .data = &clk_rpmh_eliza},
 	{ .compatible = "qcom,glymur-rpmh-clk", .data = &clk_rpmh_glymur},
 	{ .compatible = "qcom,hawi-rpmh-clk", .data = &clk_rpmh_hawi},

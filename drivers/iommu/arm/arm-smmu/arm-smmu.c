@@ -662,12 +662,23 @@ void arm_smmu_write_context_bank(struct arm_smmu_device *smmu, int idx)
 		arm_smmu_cb_write(smmu, idx, ARM_SMMU_CB_SCTLR, reg);
 }
 
+/*
+ * Set when the DT asks us to inherit a live SMMU: the firmware on such
+ * platforms owns the low context banks for the secure world, and writing them
+ * from the non-secure kernel stalls the bus, so allocate from the top instead.
+ */
+static bool arm_smmu_reverse_cb_alloc;
+
 static int arm_smmu_alloc_context_bank(struct arm_smmu_domain *smmu_domain,
 				       struct arm_smmu_device *smmu,
 				       struct device *dev, unsigned int start)
 {
 	if (smmu->impl && smmu->impl->alloc_context_bank)
 		return smmu->impl->alloc_context_bank(smmu_domain, smmu, dev, start);
+
+	if (arm_smmu_reverse_cb_alloc)
+		return __arm_smmu_alloc_bitmap_rev(smmu->context_map, start,
+						   smmu->num_context_banks);
 
 	return __arm_smmu_alloc_bitmap(smmu->context_map, start, smmu->num_context_banks);
 }
@@ -676,6 +687,7 @@ static int arm_smmu_init_domain_context(struct arm_smmu_domain *smmu_domain,
 					struct arm_smmu_device *smmu,
 					struct device *dev)
 {
+	dev_notice(dev, "M2582: smmu init_domain_context enter\n");
 	int irq, start, ret = 0;
 	unsigned long ias, oas;
 	struct io_pgtable_ops *pgtbl_ops;
@@ -842,7 +854,9 @@ static int arm_smmu_init_domain_context(struct arm_smmu_domain *smmu_domain,
 
 	/* Initialise the context bank with our page table cfg */
 	arm_smmu_init_context_bank(smmu_domain, &pgtbl_cfg);
+	dev_notice(smmu->dev, "M2582: smmu writing context bank %d\n", cfg->cbndx);
 	arm_smmu_write_context_bank(smmu, cfg->cbndx);
+	dev_notice(smmu->dev, "M2582: smmu context bank %d written\n", cfg->cbndx);
 
 	/*
 	 * Request context fault interrupt. Do this last to avoid the
@@ -903,7 +917,9 @@ static void arm_smmu_destroy_domain_context(struct arm_smmu_domain *smmu_domain)
 	 * it.
 	 */
 	smmu->cbs[cfg->cbndx].cfg = NULL;
+	dev_notice(smmu->dev, "M2582: smmu writing context bank %d\n", cfg->cbndx);
 	arm_smmu_write_context_bank(smmu, cfg->cbndx);
+	dev_notice(smmu->dev, "M2582: smmu context bank %d written\n", cfg->cbndx);
 
 	if (cfg->irptndx != ARM_SMMU_INVALID_IRPTNDX) {
 		irq = smmu->irqs[cfg->irptndx];
@@ -1084,6 +1100,7 @@ static bool arm_smmu_free_sme(struct arm_smmu_device *smmu, int idx)
 
 static int arm_smmu_master_alloc_smes(struct device *dev)
 {
+	dev_notice(dev, "M2582: smmu master_alloc_smes(%s)\n", dev_name(dev));
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
 	struct arm_smmu_master_cfg *cfg = dev_iommu_priv_get(dev);
 	struct arm_smmu_device *smmu = cfg->smmu;
@@ -1115,6 +1132,7 @@ static int arm_smmu_master_alloc_smes(struct device *dev)
 		cfg->smendx[i] = (s16)idx;
 	}
 
+	dev_notice(dev, "M2582: smmu alloc_smes software ok, poking smr/s2cr\n");
 	/* It worked! Now, poke the actual hardware */
 	for_each_cfg_sme(cfg, fwspec, i, idx)
 		arm_smmu_write_sme(smmu, idx);
@@ -1433,6 +1451,7 @@ struct arm_smmu_device *arm_smmu_get_by_fwnode(struct fwnode_handle *fwnode)
 
 static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 {
+	dev_notice(dev, "M2582: smmu probe_device(%s)\n", dev_name(dev));
 	struct arm_smmu_device *smmu = NULL;
 	struct arm_smmu_master_cfg *cfg;
 	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
@@ -1663,9 +1682,13 @@ static void arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	int i;
 	u32 reg;
 
+	dev_notice(smmu->dev, "M2582: reset enter (groups=%d cbs=%d)\n",
+		   smmu->num_mapping_groups, smmu->num_context_banks);
+
 	/* clear global FSR */
 	reg = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_sGFSR);
 	arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_sGFSR, reg);
+	dev_notice(smmu->dev, "M2582: reset after sGFSR\n");
 
 	/*
 	 * Reset stream mapping groups: Initial values mark all SMRn as
@@ -1673,12 +1696,15 @@ static void arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	 */
 	for (i = 0; i < smmu->num_mapping_groups; ++i)
 		arm_smmu_write_sme(smmu, i);
+	dev_notice(smmu->dev, "M2582: reset after SMR loop\n");
 
 	/* Make sure all context banks are disabled and clear CB_FSR  */
 	for (i = 0; i < smmu->num_context_banks; ++i) {
 		arm_smmu_write_context_bank(smmu, i);
 		arm_smmu_cb_write(smmu, i, ARM_SMMU_CB_FSR, ARM_SMMU_CB_FSR_FAULT);
 	}
+
+	dev_notice(smmu->dev, "M2582: reset after CB loop\n");
 
 	/* Invalidate the TLB, just in case */
 	arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_TLBIALLH, QCOM_DUMMY_VAL);
@@ -1712,12 +1738,15 @@ static void arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	if (smmu->features & ARM_SMMU_FEAT_EXIDS)
 		reg |= ARM_SMMU_sCR0_EXIDENABLE;
 
+	dev_notice(smmu->dev, "M2582: reset before impl reset\n");
 	if (smmu->impl && smmu->impl->reset)
 		smmu->impl->reset(smmu);
+	dev_notice(smmu->dev, "M2582: reset after impl reset, writing sCR0\n");
 
 	/* Push the button */
 	arm_smmu_tlb_sync_global(smmu);
 	arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_sCR0, reg);
+	dev_notice(smmu->dev, "M2582: reset done\n");
 }
 
 static int arm_smmu_id_size_to_bits(int size)
@@ -2120,6 +2149,7 @@ static void arm_smmu_rmr_install_bypass_smr(struct arm_smmu_device *smmu)
 
 static int arm_smmu_device_probe(struct platform_device *pdev)
 {
+	dev_notice(&pdev->dev, "M2582: smmu probe enter\n");
 	struct resource *res;
 	struct arm_smmu_device *smmu;
 	struct device *dev = &pdev->dev;
@@ -2227,22 +2257,55 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, smmu);
 
 	/* Check for RMRs and install bypass SMRs if any */
+	dev_notice(dev, "M2582: smmu pre rmr\n");
 	arm_smmu_rmr_install_bypass_smr(smmu);
-
-	arm_smmu_device_reset(smmu);
-	arm_smmu_test_smr_masks(smmu);
+	/*
+	 * On this platform the bootloader hands over a live SMMU that is already
+	 * translating for UFS. Re-initialising every SMR and context bank writes
+	 * registers the non-secure kernel must not touch and hangs the AXI bus,
+	 * so keep the inherited configuration when the DT asks for it.
+	 */
+	if (of_property_read_bool(dev->of_node, "qcom,skip-reset")) {
+		dev_notice(dev, "M2582: keeping bootloader SMMU configuration\n");
+		arm_smmu_reverse_cb_alloc = true;
+		/*
+		 * arm_smmu_test_smr_masks() is the only thing that ever derives
+		 * smr_mask_mask, and upstream runs it right after the reset has
+		 * invalidated every SMR. Here the reset is deliberately skipped to
+		 * preserve the bootloader's live mappings, so running that probe
+		 * would clobber a live SMR. Derive the mask from the stream ID
+		 * width instead, without touching hardware.
+		 *
+		 * Without this smr_mask_mask stays 0, so any iommus entry whose
+		 * mask is non-zero is rejected as out of range and
+		 * iommu_device_register() fails with -EINVAL. That leaves the
+		 * whole IOMMU unbound, and UFS waits forever for it.
+		 */
+		smmu->smr_mask_mask = smmu->streamid_mask;
+		dev_notice(dev, "M2582: derived smr_mask_mask=0x%x (streamid_mask=0x%x)\n",
+			   smmu->smr_mask_mask, smmu->streamid_mask);
+	} else {
+		dev_notice(dev, "M2582: smmu post rmr, pre reset\n");
+		arm_smmu_device_reset(smmu);
+		dev_notice(dev, "M2582: smmu post reset, pre smr masks\n");
+		arm_smmu_test_smr_masks(smmu);
+		dev_notice(dev, "M2582: smmu post smr masks\n");
+	}
 
 	err = iommu_device_sysfs_add(&smmu->iommu, smmu->dev, NULL,
 				     "smmu.%pa", &smmu->ioaddr);
+	dev_notice(dev, "M2582: smmu sysfs_add -> %d\n", err);
 	if (err)
 		return dev_err_probe(dev, err, "Failed to register iommu in sysfs\n");
 
 	err = iommu_device_register(&smmu->iommu, &arm_smmu_ops,
 				    using_legacy_binding ? NULL : dev);
+	dev_notice(dev, "M2582: smmu register -> %d\n", err);
 	if (err) {
 		iommu_device_sysfs_remove(&smmu->iommu);
 		return dev_err_probe(dev, err, "Failed to register iommu\n");
 	}
+	dev_notice(dev, "M2582: smmu probe done, ops registered\n");
 
 	/*
 	 * We want to avoid touching dev->power.lock in fastpaths unless

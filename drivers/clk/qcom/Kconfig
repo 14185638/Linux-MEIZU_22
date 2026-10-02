@@ -1489,6 +1489,46 @@ config SM_GCC_8750
 	  Say Y if you want to use peripheral devices such as UART,
 	  SPI, I2C, USB, SD/UFS, PCIe etc.
 
+config SM_GCC_TUNA
+	tristate "SM8735 (TUNA) Global Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	select QCOM_GDSC
+	help
+	  Support for the global clock controller on SM8735 (TUNA) devices.
+	  Say Y if you want to use peripheral devices such as UART,
+	  SPI, I2C, USB, SD/UFS, PCIe etc.
+
+config SM_DISPCC_TUNA
+	tristate "SM8735 (TUNA) Display Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	select SM_GCC_TUNA
+	select QCOM_GDSC
+	help
+	  Support for the display clock controller on SM8735 (TUNA) devices.
+
+config SM_TCSRCC_TUNA
+	tristate "SM8735 (TUNA) TCSR Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	select QCOM_GDSC
+	help
+	  Support for the TCSR clock controller on SM8735 (TUNA) devices.
+
+config SM_VIDEOCC_TUNA
+	tristate "SM8735 (TUNA) Video Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	select SM_GCC_TUNA
+	select QCOM_GDSC
+	help
+	  Support for the video clock controller on SM8735 (TUNA) devices.
+
+config SM_GPUCC_TUNA
+	tristate "SM8735 (TUNA) Graphics Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	select SM_GCC_TUNA
+	select QCOM_GDSC
+	help
+	  Support for the graphics clock controller on SM8735 (TUNA) devices.
+
 config SM_GPUCC_4450
 	tristate "SM4450 Graphics Clock Controller"
 	depends on ARM64 || COMPILE_TEST

@@ -639,6 +639,23 @@ static const struct rpmhpd_desc sm8650_desc = {
 	.num_pds = ARRAY_SIZE(sm8650_rpmhpds),
 };
 
+/* Boot-critical TUNA ARC resources present in the device command DB. */
+static struct rpmhpd *tuna_rpmhpds[] = {
+	[RPMHPD_CX] = &cx,
+	[RPMHPD_CX_AO] = &cx_ao,
+	[RPMHPD_MX] = &mx,
+	[RPMHPD_MX_AO] = &mx_ao,
+	[RPMHPD_MMCX] = &mmcx_w_cx_parent,
+	[RPMHPD_MMCX_AO] = &mmcx_ao_w_cx_parent,
+	[RPMHPD_MXC] = &mxc,
+	[RPMHPD_MXC_AO] = &mxc_ao,
+};
+
+static const struct rpmhpd_desc tuna_desc = {
+	.rpmhpds = tuna_rpmhpds,
+	.num_pds = ARRAY_SIZE(tuna_rpmhpds),
+};
+
 /* SM8750 RPMH powerdomains */
 static struct rpmhpd *sm8750_rpmhpds[] = {
 	[RPMHPD_CX] = &cx,
@@ -889,6 +906,7 @@ static const struct rpmhpd_desc qcs615_desc = {
 };
 
 static const struct of_device_id rpmhpd_match_table[] = {
+	{ .compatible = "qcom,tuna-rpmhpd", .data = &tuna_desc },
 	{ .compatible = "qcom,eliza-rpmhpd", .data = &eliza_desc },
 	{ .compatible = "qcom,glymur-rpmhpd", .data = &glymur_desc },
 	{ .compatible = "qcom,hawi-rpmhpd", .data = &hawi_desc },

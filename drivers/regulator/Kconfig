@@ -1176,6 +1176,14 @@ config REGULATOR_QCOM_RPMH
 	  control allows for voting on regulator state between multiple
 	  processors within the SoC.
 
+config REGULATOR_QCOM_TUNA_BOOT
+	tristate "TUNA boot-time RPMh LDO votes (EXPERIMENTAL)"
+	depends on OF && QCOM_RPMH && QCOM_COMMAND_DB
+	help
+	  Active-only PMIC5 LDO voltage votes for experimental SM8735 bring-up.
+	  Use verified firmware resource names and board voltage limits.
+	  Suspend and multiple state votes are not implemented.
+
 config REGULATOR_QCOM_SMD_RPM
 	tristate "Qualcomm SMD based RPM regulator driver"
 	depends on QCOM_SMD_RPM

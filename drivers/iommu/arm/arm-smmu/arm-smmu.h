@@ -476,6 +476,24 @@ static inline int __arm_smmu_alloc_bitmap(unsigned long *map, int start, int end
 	return idx;
 }
 
+/*
+ * Same, but allocates from the top down. Used on platforms whose firmware
+ * keeps the low context banks for the secure world: touching those registers
+ * from the non-secure kernel stalls the AXI bus, while the high ones are
+ * ordinary and writable.
+ */
+static inline int __arm_smmu_alloc_bitmap_rev(unsigned long *map, int start, int end)
+{
+	int idx = end;
+
+	do {
+		if (--idx < start)
+			return -ENOSPC;
+	} while (test_and_set_bit(idx, map));
+
+	return idx;
+}
+
 static inline void __iomem *arm_smmu_page(struct arm_smmu_device *smmu, int n)
 {
 	return smmu->base + (n << smmu->pgshift);

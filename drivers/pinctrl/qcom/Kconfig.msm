@@ -1,6 +1,15 @@
 # SPDX-License-Identifier: GPL-2.0-only
 if PINCTRL_MSM
 
+config PINCTRL_TUNA
+	tristate "Qualcomm TUNA pin controller driver"
+	depends on ARM64 || COMPILE_TEST
+	default ARCH_QCOM
+	help
+	  This is the pinctrl, pinmux, pinconf and gpiolib driver for the
+	  Qualcomm Technologies Inc. TLMM block found on the Qualcomm
+	  Technologies Inc. TUNA platform.
+
 config PINCTRL_APQ8064
 	tristate "Qualcomm APQ8064 pin controller driver"
 	depends on ARM || COMPILE_TEST

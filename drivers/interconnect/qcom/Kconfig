@@ -460,3 +460,11 @@ config INTERCONNECT_QCOM_X1E80100
 
 config INTERCONNECT_QCOM_SMD_RPM
 	tristate
+
+config INTERCONNECT_QCOM_TUNA
+	tristate "Qualcomm TUNA interconnect driver"
+	depends on INTERCONNECT_QCOM_RPMH_POSSIBLE
+	select INTERCONNECT_QCOM_RPMH
+	select INTERCONNECT_QCOM_BCM_VOTER
+	help
+	  Support the HLOS interconnect paths on Qualcomm SM8735/TUNA.
