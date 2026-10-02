@@ -9402,6 +9402,7 @@ static int ufshcd_device_init(struct ufs_hba *hba, bool init_dev_params)
  */
 static int ufshcd_probe_hba(struct ufs_hba *hba, bool init_dev_params)
 {
+	dev_info(hba->dev, "M2582UFS: probe_hba enter\n");
 	int ret;
 
 	if (!hba->pm_op_in_progress &&
@@ -11111,7 +11112,9 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	 */
 	hba->vcc_off_delay_us = 2000;
 
+	dev_info(dev, "M2582UFS: init start -> ufshcd_hba_init\n");
 	err = ufshcd_hba_init(hba);
+	dev_info(dev, "M2582UFS: ufshcd_hba_init -> %d\n", err);
 	if (err)
 		goto out_error;
 
@@ -11122,6 +11125,7 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 
 	/* Get UFS version supported by the controller */
 	hba->ufs_version = ufshcd_get_ufs_version(hba);
+	dev_info(dev, "M2582UFS: capabilities ok, ufs_version=0x%x\n", hba->ufs_version);
 
 	/* Get Interrupt bit mask per version */
 	hba->intr_mask = ufshcd_get_intr_mask(hba);
@@ -11221,7 +11225,9 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufshcd_init_crypto(hba);
 
 	/* Host controller enable */
+	dev_info(dev, "M2582UFS: enabling host controller\n");
 	err = ufshcd_hba_enable(hba);
+	dev_info(dev, "M2582UFS: hba_enable -> %d\n", err);
 	if (err) {
 		dev_err(hba->dev, "Host controller enable failed\n");
 		ufshcd_print_evt_hist(hba);

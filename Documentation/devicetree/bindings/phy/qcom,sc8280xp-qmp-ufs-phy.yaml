@@ -58,6 +58,7 @@ properties:
           - qcom,sm8475-qmp-ufs-phy
           - qcom,sm8550-qmp-ufs-phy
           - qcom,sm8650-qmp-ufs-phy
+          - qcom,tuna-qmp-ufs-phy
           - qcom,sm8750-qmp-ufs-phy
 
   reg:
@@ -84,6 +85,8 @@ properties:
   vdda-phy-supply: true
 
   vdda-pll-supply: true
+
+  vdda-qref-supply: true
 
   "#clock-cells":
     const: 1
