@@ -1562,7 +1562,6 @@ static int ufs_qcom_icc_init(struct ufs_qcom_host *host)
  */
 static int ufs_qcom_init(struct ufs_hba *hba)
 {
-	dev_dbg(hba->dev, "M2582UFS: qcom init enter\n");
 	int err;
 	struct device *dev = hba->dev;
 	struct ufs_qcom_host *host;
@@ -2962,7 +2961,6 @@ static const struct ufs_hba_variant_ops ufs_hba_qcom_sa8255p_vops = {
  */
 static int ufs_qcom_probe(struct platform_device *pdev)
 {
-	dev_dbg(&pdev->dev, "M2582UFS: qcom probe enter\n");
 	int err;
 	struct device *dev = &pdev->dev;
 	const struct ufs_hba_variant_ops *vops;

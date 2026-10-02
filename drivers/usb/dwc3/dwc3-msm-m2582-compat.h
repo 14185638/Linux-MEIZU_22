@@ -12,6 +12,7 @@
 
 #include <linux/string.h>
 #include <linux/gpio.h>
+#include <linux/of.h>
 
 /* strtobool() was replaced by kstrtobool() upstream. */
 static inline int m2582_strtobool(const char *s, bool *res)
@@ -41,5 +42,14 @@ static inline int of_get_named_gpio(struct device_node *np,
 #define WCD_USBSS_CABLE_DISCONNECT	0
 static inline int wcd_usbss_switch_update(int sw, int state) { return 0; }
 static inline int wcd_usbss_dpdm_switch_update(bool a, bool b) { return 0; }
+
+/*
+ * No-op replacements for the two entry points dwc3-msm-core.c calls that live
+ * in the vendor's dwc3-msm-ops.c, the kprobe-based USB state reporter. That
+ * file is not built here because it needs CONFIG_ANDROID_USB_CONFIGFS_UEVENT,
+ * which mainline does not provide; dwc3-msm-m2582-stubs.c supplies the bodies.
+ */
+int dwc3_msm_kretprobe_init(void);
+void dwc3_msm_kretprobe_exit(void);
 
 #endif /* __DWC3_MSM_M2582_COMPAT_H */

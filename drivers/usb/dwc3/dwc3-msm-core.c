@@ -1465,11 +1465,6 @@ static int dbm_event_buffer_config(struct dwc3_msm *mdwc, u32 addr_lo,
 {
 	dev_dbg(mdwc->dev, "Configuring event buffer\n");
 
-	dev_dbg(mdwc->dev,
-		 "M2582: dbm_evt_cfg addr=%08x/%08x size=%d dbm_gevntsiz=%08x\n",
-		 addr_lo, addr_hi, size,
-		 msm_dbm_read_reg(mdwc, DBM_GEVNTSIZ));
-
 	if (size < 0) {
 		dev_err(mdwc->dev, "Invalid size %d\n", size);
 		return -EINVAL;
@@ -1487,15 +1482,6 @@ static int dbm_event_buffer_config(struct dwc3_msm *mdwc, u32 addr_lo,
 	}
 
 	msm_dbm_write_reg_field(mdwc, DBM_GEVNTSIZ, DBM_GEVNTSIZ_MASK, size);
-
-	/* M2582: confirm the writes actually landed. If DBM_REG_OFFSET or the
-	 * register table is wrong these read back as zero and the DBM never
-	 * delivers anything, which looks exactly like the event storm we see. */
-	dev_dbg(mdwc->dev,
-		 "M2582: dbm readback addr=%08x/%08x siz=%08x\n",
-		 msm_dbm_read_reg(mdwc, DBM_GEVNTADR_LSB),
-		 msm_dbm_read_reg(mdwc, DBM_GEVNTADR_MSB),
-		 msm_dbm_read_reg(mdwc, DBM_GEVNTSIZ));
 
 	return 0;
 }
@@ -1748,7 +1734,7 @@ static int __dwc3_msm_dbm_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req
  *
  * @return int - 0 on success, negative on error.
  */
-static int dwc3_msm_ep_queue(struct usb_ep *ep,
+static int __maybe_unused dwc3_msm_ep_queue(struct usb_ep *ep,
 			     struct usb_request *request, gfp_t gfp_flags)
 {
 	struct dwc3_request *req = to_dwc3_request(request);
@@ -3650,16 +3636,9 @@ static void dwc3_msm_block_reset(struct dwc3_msm *mdwc, bool core_reset)
 	 * and the resulting failure to answer SET_ADDRESS.
 	 */
 	if (mdwc->dbm_reg_table) {
-		u32 had = msm_dbm_read_reg(mdwc, DBM_GEVNTSIZ);
-
 		msm_dbm_write_reg(mdwc, DBM_GEVNTSIZ, 0);
 		msm_dbm_write_reg(mdwc, DBM_GEVNTADR_LSB, 0);
 		msm_dbm_write_reg(mdwc, DBM_GEVNTADR_MSB, 0);
-		dev_dbg(mdwc->dev,
-			 "M2582: dbm stale clear: gevntsiz before=%08x after=%08x\n",
-			 had, msm_dbm_read_reg(mdwc, DBM_GEVNTSIZ));
-	} else {
-		dev_dbg(mdwc->dev, "M2582: dbm_reg_table not set yet, no clear\n");
 	}
 
 	/*
@@ -3709,8 +3688,6 @@ static void dwc3_msm_block_reset(struct dwc3_msm *mdwc, bool core_reset)
 	dwc3_msm_write_reg_field(mdwc->base, QSCRATCH_GENERAL_CFG,
 		DBM_EN_MASK, 0x1);
 	usleep_range(1000, 1200);
-	dev_dbg(mdwc->dev, "M2582: DBM_EN set, QSCRATCH_GENERAL_CFG=%08x\n",
-		 dwc3_msm_read_reg(mdwc->base, QSCRATCH_GENERAL_CFG));
 	if (!mdwc->dbm_is_1p4) {
 		msm_dbm_write_reg(mdwc, DBM_DATA_FIFO_ADDR_EN, 0xFF);
 		msm_dbm_write_reg(mdwc, DBM_DATA_FIFO_SIZE_EN, 0xFF);
@@ -6012,30 +5989,6 @@ static void dwc3_msm_override_pm_ops(struct device *dev, struct dev_pm_ops *pm_o
 }
 
 
-/*
- * M2582 bring-up probe: the device tree node keeps getting corrupted somewhere
- * between probe and the point where a child device raises a uevent, which then
- * oopses in __pi_strcmp while walking the stale property list. Read the same
- * property at several points to find out when it goes bad.
- */
-static void m2582_dt_check_node(struct device *dev, const char *stage,
-				 struct device_node *np)
-{
-	const char *compat = np ? of_get_property(np, "compatible", NULL) : NULL;
-
-	dev_dbg(dev, "M2582: dtck[%s] node=%px compat=%px %s\n",
-		 stage, np, compat, compat ? (const char *)compat : "(null)");
-}
-
-static void m2582_dt_check(struct device *dev, const char *stage)
-{
-	const char *compat = of_get_property(dev->of_node, "compatible", NULL);
-
-	dev_dbg(dev, "M2582: dtck[%s] node=%px compat=%px %s\n",
-		 stage, dev->of_node, compat,
-		 compat ? (const char *)compat : "(null)");
-}
-
 static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 {
 	/*
@@ -6054,8 +6007,6 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 	 * So record that we populated, never populate twice, and return the first
 	 * result on every later call.
 	 */
-	m2582_dt_check(mdwc->dev, "core_init-entry");
-
 	if (mdwc->dt_populated)
 		return mdwc->dt_populate_ret;
 
@@ -6093,9 +6044,7 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 		goto err;
 	}
 
-	m2582_dt_check(mdwc->dev, "before-populate");
 	ret = of_platform_populate(node, NULL, NULL, mdwc->dev);
-	m2582_dt_check(mdwc->dev, "after-populate");
 	mdwc->dt_populate_ret = ret;
 	if (ret) {
 		dev_err(mdwc->dev,
@@ -6131,9 +6080,6 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 			dwc3_msm_read_reg(mdwc->base, DWC3_GEVNTADRHI(0)),
 			DWC3_GEVNTSIZ_SIZE(evt_siz));
 	}
-	m2582_dt_check_node(mdwc->dev, "child-after-populate", dwc3_node);
-	m2582_dt_check_node(mdwc->dev, "child-core-dev-node",
-			    mdwc->dwc3 ? mdwc->dwc3->dev.of_node : NULL);
 	of_node_put(dwc3_node);
 	if (!mdwc->dwc3) {
 		dev_err(mdwc->dev, "failed to get dwc3 platform device\n");
@@ -6191,10 +6137,7 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 	 * sides start from the same place.
 	 */
 	dwc3_event_buffers_cleanup(dwc);
-	if (dwc3_event_buffers_setup(dwc))
-		dev_dbg(mdwc->dev, "M2582: event ring reprogramme failed\n");
-	else
-		dev_dbg(mdwc->dev, "M2582: event ring drained and reprogrammed\n");
+	dwc3_event_buffers_setup(dwc);
 
 	mdwc->dwc3_pm_ops = kzalloc(sizeof(struct dev_pm_ops), GFP_ATOMIC);
 	if (!mdwc->dwc3_pm_ops)
@@ -6268,8 +6211,6 @@ static int dwc3_msm_parse_core_params(struct dwc3_msm *mdwc, struct device_node 
 	phy_node = of_parse_phandle(dwc3_node, "usb-phy", 0);
 	mdwc->hs_phy = devm_usb_get_phy_by_node(mdwc->dev, phy_node, NULL);
 	if (IS_ERR(mdwc->hs_phy)) {
-		dev_dbg(mdwc->dev,
-			 "M2582: no legacy hs usb-phy, using stand-in (generic PHY drives the hardware)\n");
 		mdwc->hs_phy = devm_kzalloc(mdwc->dev, sizeof(*mdwc->hs_phy),
 					    GFP_KERNEL);
 		if (!mdwc->hs_phy)
@@ -6281,8 +6222,6 @@ static int dwc3_msm_parse_core_params(struct dwc3_msm *mdwc, struct device_node 
 	phy_node = of_parse_phandle(dwc3_node, "usb-phy", 1);
 	mdwc->ss_phy = devm_usb_get_phy_by_node(mdwc->dev, phy_node, NULL);
 	if (IS_ERR(mdwc->ss_phy)) {
-		dev_dbg(mdwc->dev,
-			 "M2582: no legacy ss usb-phy, using stand-in (generic PHY drives the hardware)\n");
 		mdwc->ss_phy = devm_kzalloc(mdwc->dev, sizeof(*mdwc->ss_phy),
 					    GFP_KERNEL);
 		if (!mdwc->ss_phy)
@@ -6753,7 +6692,6 @@ err:
 	 * enabled, so the core probe that follows runs with its clocks running.
 	 */
 	dwc3_msm_block_reset(mdwc, true);
-	dev_dbg(mdwc->dev, "M2582: block_reset(core+DBM) done before the dwc3 core probe\n");
 
 return ret;
 }
@@ -7595,9 +7533,6 @@ static void dwc3_otg_sm_work(struct work_struct *w)
 			 * stays intact.
 			 */
 			if (++mdwc->core_init_retries > 3) {
-				dev_dbg(mdwc->dev,
-					"M2582: core_init failed %d times, giving up\n",
-					mdwc->core_init_retries);
 				work = false;
 				break;
 			}

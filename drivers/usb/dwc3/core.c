@@ -333,28 +333,18 @@ int dwc3_core_soft_reset(struct dwc3 *dwc)
 	 * synchronise, clear), just moved to where the reset actually needs it.
 	 */
 	reg = dwc3_readl(dwc->regs, DWC3_GCTL);
-	dev_dbg(dwc->dev, "M2582: pre-reset GCTL=%08x DCTL=%08x GUSB3PIPECTL0=%08x GUSB2PHYCFG0=%08x\n",
-		 reg, dwc3_readl(dwc->regs, DWC3_DCTL),
-		 dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0)),
-		 dwc3_readl(dwc->regs, DWC3_GUSB2PHYCFG(0)));
 
 	reg |= DWC3_GCTL_CORESOFTRESET;
 	dwc3_writel(dwc->regs, DWC3_GCTL, reg);
-	dev_dbg(dwc->dev, "M2582: GCTL.CORESOFTRESET asserted (GCTL=%08x)\n",
-		 dwc3_readl(dwc->regs, DWC3_GCTL));
 	msleep(100);
 	reg = dwc3_readl(dwc->regs, DWC3_GCTL);
 	reg &= ~DWC3_GCTL_CORESOFTRESET;
 	dwc3_writel(dwc->regs, DWC3_GCTL, reg);
-	dev_dbg(dwc->dev, "M2582: GCTL.CORESOFTRESET cleared (GCTL=%08x)\n",
-		 dwc3_readl(dwc->regs, DWC3_GCTL));
 
 	reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 	reg |= DWC3_DCTL_CSFTRST;
 	reg &= ~DWC3_DCTL_RUN_STOP;
 	dwc3_gadget_dctl_write_safe(dwc, reg);
-	dev_dbg(dwc->dev, "M2582: DCTL.CSFTRST set (DCTL=%08x)\n",
-		 dwc3_readl(dwc->regs, DWC3_DCTL));
 
 	/*
 	 * For DWC_usb31 controller 1.90a and later, the DCTL.CSFRST bit
@@ -377,9 +367,6 @@ int dwc3_core_soft_reset(struct dwc3 *dwc)
 	} while (--retries);
 
 	dev_warn(dwc->dev, "DWC3 controller soft reset failed.\n");
-	dev_dbg(dwc->dev, "M2582: final DCTL=%08x GCTL=%08x after %d retries\n",
-		 dwc3_readl(dwc->regs, DWC3_DCTL),
-		 dwc3_readl(dwc->regs, DWC3_GCTL), retries);
 	return -ETIMEDOUT;
 
 done:
@@ -641,16 +628,6 @@ static void dwc3_core_num_eps(struct dwc3 *dwc)
 	struct dwc3_hwparams	*parms = &dwc->hwparams;
 
 	dwc->num_eps = DWC3_NUM_EPS(parms);
-
-	/*
-	 * M2582: the core answers endpoint commands with DEPEVT_TRANSFER_NO_RESOURCE
-	 * ("No resource for ep0out") even for the DEPCFG that should allocate EP0's
-	 * resource, so its endpoint/FIFO resource model is the thing to look at.
-	 */
-	dev_dbg(dwc->dev,
-		 "M2582: hwparams num_eps=%d hp0=%08x hp1=%08x hp2=%08x hp3=%08x rev=%08x\n",
-		 dwc->num_eps, parms[0], parms[1], parms[2], parms[3],
-		 dwc3_readl(dwc->regs, DWC3_GSNPSID));
 }
 
 static void dwc3_cache_hwparams(struct dwc3 *dwc)
@@ -810,19 +787,14 @@ static int dwc3_phy_init(struct dwc3 *dwc)
 {
 	int ret;
 
-	dev_dbg(dwc->dev, "M2582: phy_init enter usb2=%px usb3=%px\n",
-		 dwc->usb2_generic_phy, dwc->usb3_generic_phy);
-
 	usb_phy_init(dwc->usb2_phy);
 	usb_phy_init(dwc->usb3_phy);
 
 	ret = phy_init(dwc->usb2_generic_phy);
-	dev_dbg(dwc->dev, "M2582: phy_init(usb2_generic)=%d\n", ret);
 	if (ret < 0)
 		goto err_shutdown_usb3_phy;
 
 	ret = phy_init(dwc->usb3_generic_phy);
-	dev_dbg(dwc->dev, "M2582: phy_init(usb3_generic)=%d\n", ret);
 	if (ret < 0)
 		goto err_exit_usb2_phy;
 
@@ -1362,14 +1334,9 @@ static int dwc3_core_init(struct dwc3 *dwc)
 	{
 		u32 r = dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0));
 
-		dev_dbg(dwc->dev, "M2582: GUSB3PIPECTL0 after phy_init = %08x (SUSPHY=%d)\n",
-			 r, !!(r & DWC3_GUSB3PIPECTL_SUSPHY));
-		if (r & DWC3_GUSB3PIPECTL_SUSPHY) {
+		if (r & DWC3_GUSB3PIPECTL_SUSPHY)
 			dwc3_writel(dwc->regs, DWC3_GUSB3PIPECTL(0),
 				    r & ~DWC3_GUSB3PIPECTL_SUSPHY);
-			dev_dbg(dwc->dev, "M2582: SUSPHY forced clear -> %08x\n",
-				 dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0)));
-		}
 	}
 	if (ret)
 		goto err_exit_ulpi;
@@ -1383,14 +1350,9 @@ static int dwc3_core_init(struct dwc3 *dwc)
 	 * enable_cnt = 0 at the point of the reset. phy_power_on() is
 	 * reference-counted, so the later call is harmless.
 	 */
-	dev_dbg(dwc->dev, "M2582: phys usb2=%px usb3=%px\n",
-		 dwc->usb2_generic_phy, dwc->usb3_generic_phy);
 	ret = dwc3_phy_power_on(dwc);
-	dev_dbg(dwc->dev, "M2582: early phy_power_on -> %d\n", ret);
-	if (ret) {
-		dev_dbg(dwc->dev, "M2582: early phy_power_on failed: %d\n", ret);
+	if (ret)
 		goto err_exit_phy;
-	}
 
 	ret = dwc3_core_soft_reset(dwc);
 	if (ret)
@@ -1434,10 +1396,6 @@ static int dwc3_core_init(struct dwc3 *dwc)
 	 * transfer resource and makes every later STARTTRANSFER come back as
 	 * DEPEVT_TRANSFER_NO_RESOURCE ("No resource for ep0out").
 	 */
-	dev_dbg(dwc->dev, "M2582: core identity ip=%d hwparams5=%08x gsnpsid=%08x\n",
-		 dwc->ip, dwc->hwparams.hwparams5,
-		 dwc3_readl(dwc->regs, DWC3_GSNPSID));
-
 	/*
 	 * M2582: program GUCTL2[14] unconditionally.
 	 *
@@ -1457,9 +1415,6 @@ static int dwc3_core_init(struct dwc3 *dwc)
 	reg = dwc3_readl(dwc->regs, DWC3_GUCTL2);
 	reg |= DWC3_GUCTL2_RST_ACTBITLATER;
 	dwc3_writel(dwc->regs, DWC3_GUCTL2, reg);
-	dev_dbg(dwc->dev, "M2582: guctl2 after=%08x (bit14=%d)\n",
-		 dwc3_readl(dwc->regs, DWC3_GUCTL2),
-		 !!(dwc3_readl(dwc->regs, DWC3_GUCTL2) & DWC3_GUCTL2_RST_ACTBITLATER));
 
 	/*
 	 * STAR 9001285599: This issue affects DWC_usb3 version 3.20a
@@ -1600,16 +1555,6 @@ static int dwc3_core_get_phy(struct dwc3 *dwc)
 		else
 			return dev_err_probe(dev, ret, "no usb3 phy configured\n");
 	}
-
-	/*
-	 * M2582: both of these are silently turned into NULL when the lookup
-	 * returns -ENODEV/-ENOSYS, and phy_init(NULL) then returns 0, so a PHY
-	 * that was never bound makes the whole chain look healthy while the PHY
-	 * is never initialised at all. Print what we actually got.
-	 */
-	dev_dbg(dev, "M2582: dwc3 phys usb2=%px usb3=%px legacy2=%px legacy3=%px\n",
-		 dwc->usb2_generic_phy, dwc->usb3_generic_phy,
-		 dwc->usb2_phy, dwc->usb3_phy);
 
 	return 0;
 }

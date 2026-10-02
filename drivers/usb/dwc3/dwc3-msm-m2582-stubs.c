@@ -7,5 +7,7 @@
  */
 #include <linux/kernel.h>
 
+#include "dwc3-msm-m2582-compat.h"
+
 int dwc3_msm_kretprobe_init(void) { return 0; }
 void dwc3_msm_kretprobe_exit(void) { }

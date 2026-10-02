@@ -3041,32 +3041,14 @@ static int gcc_tuna_probe(struct platform_device *pdev)
 	 *   0x50018 = gcc_usb3_phy_gdsc      (0x100000 + 0x50018 = 0x150018)
 	 *   0x39004 = gcc_usb30_prim_gdsc
 	 */
-	{
-		unsigned int usb3phy = 0, usb30 = 0;
 
-		regmap_read(regmap, 0x50018, &usb3phy);
-		regmap_read(regmap, 0x39004, &usb30);
-		dev_dbg(&pdev->dev,
-			 "M2582: GDSC hw usb3_phy=0x%08x usb30_prim=0x%08x (SW_COLLAPSE bit0: %u/%u)\n",
-			 usb3phy, usb30, usb3phy & 1, usb30 & 1);
-	}
-
-	{
-		unsigned int mux = 0, gate = 0;
-
-		regmap_read(regmap, 0x39070, &mux);
-		regmap_read(regmap, 0x3906c, &gate);
-		dev_dbg(&pdev->dev,
-			 "M2582: usb3 pipe mux=0x%08x (sel=%u) gate=0x%08x\n",
-			 mux, mux & 0x3, gate);
-
-		regmap_update_bits(regmap, 0x39070, 0x3, 0);
-
-		regmap_read(regmap, 0x39070, &mux);
-		dev_dbg(&pdev->dev,
-			 "M2582: usb3 pipe mux forced to wrapper, now=0x%08x (sel=%u)\n",
-			 mux, mux & 0x3);
-	}
+	/*
+	 * Force the USB3 PIPE clock mux onto the wrapper source: 0x39070 = 0
+	 * selects usb3_phy_wrapper_gcc_usb30_pipe_clk. Leaving it on bi_tcxo (2)
+	 * or gpll0 (3) is the wrong clock domain, and DCTL.CSFTRST then never
+	 * sees a PIPE clock and never self-clears.
+	 */
+	regmap_update_bits(regmap, 0x39070, 0x3, 0);
 
 	return qcom_cc_really_probe(&pdev->dev, &gcc_tuna_desc, regmap);
 }

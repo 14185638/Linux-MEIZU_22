@@ -3983,98 +3983,20 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		return 0;
 
 	/*
-	 * M2582: read the SuperSpeed registers BEFORE touching anything.
+	 * DO NOT ioremap the GCC's USB3 BCR block (0x50000..0x5001c) and poke
+	 * it. It is secure-only from the non-secure kernel: reading it raises a
+	 * synchronous external abort and panics the board:
 	 *
-	 * This separates two very different failures. If the pre-init values already
-	 * match the factory table (000=c0 004=01 018=36), then the bootloader
-	 * programmed this PHY correctly and our own com_init is what corrupts it --
-	 * which would point straight at the ordering of the writes. If they are the
-	 * PHY's defaults instead, the bootloader never programmed it and the write
-	 * path itself is the problem.
-	 */
-	{
-		char l[224];
-		int n = scnprintf(l, sizeof(l),
-			"M2582: SS PHY PRE-INIT clks=%d (bootloader state) 000=%08x 004=%08x 010=%08x 014=%08x 018=%08x 01c=%08x 400=%08x 40c=%08x:",
-			qmp->num_clks,
-			readl_relaxed(qmp->serdes + 0x000), readl_relaxed(qmp->serdes + 0x004),
-			readl_relaxed(qmp->serdes + 0x010), readl_relaxed(qmp->serdes + 0x014),
-			readl_relaxed(qmp->serdes + 0x018), readl_relaxed(qmp->serdes + 0x01c),
-			readl_relaxed(qmp->serdes + 0x400), readl_relaxed(qmp->serdes + 0x40c));
-		dev_dbg(qmp->dev, "%s\n", l);
-
-		/*
-		 * DO NOT ioremap the GCC's USB3 BCR block (0x50000..0x5001c) and poke
-		 * it. It is secure-only from the non-secure kernel: reading it raises a
-		 * synchronous external abort and panics the board:
-		 *
-		 *     M2582: SS PHY PRE-INIT ... 018=01010101 01c=0a0a0a0a
-		 *     Internal error: synchronous external abort: 0000000096000010
-		 *     pc : qmp_combo_com_init+0x1bc/0xdec
-		 *
-		 * The same is true of the TCSR block, which is why the QMP driver pries
-		 * its gates open with a raw ioremap only where that was verified to
-		 * work. Reset lines have to go through reset_control, not raw writes.
-		 */
-	}
-
-
-	/*
-	 * M2582: is this register window writable at all?
+	 *     M2582: SS PHY PRE-INIT ... 018=01010101 01c=0a0a0a0a
+	 *     Internal error: synchronous external abort: 0000000096000010
+	 *     pc : qmp_combo_com_init+0x1bc/0xdec
 	 *
-	 * PRE-INIT and the post-init readback came back byte-for-byte identical, so
-	 * not one of the 165 writes had any effect -- and the bootloader had not
-	 * programmed this block either (0x000 should read 0xc0 after its own PHY
-	 * setup). That leaves two possibilities: the window is not where the PHY's
-	 * registers are, or it is there but write-protected. A write/read-back at a
-	 * few offsets, in the same style as the eUSB2 APB_ACCESS_CMD test, tells
-	 * the two apart.
+	 * The same is true of the TCSR block, which is why the QMP driver pries
+	 * its gates open with a raw ioremap only where that was verified to
+	 * work. Reset lines have to go through reset_control, not raw writes.
 	 */
-	{
-		/*
-		 * Which sub-block, if any, is writable? Every clock is now alive
-		 * (aux, cfg_ahb, ref, com_aux all resolved and running) yet a
-		 * write/read-back of 0xa5a5a5a5 across the serdes window still reads
-		 * back the original values at every offset, and PRE-INIT equals
-		 * post-init byte for byte. Either the whole PHY is being held in reset
-		 * or these offsets are not where its registers live. Testing one
-		 * register in each region separates those two.
-		 */
-		struct { const char *n; void __iomem *b; u32 o; } bt[] = {
-			{ "com",      qmp->com,      0x000 },
-			{ "serdes",   qmp->serdes,   0x000 },
-			{ "txa",      qmp->serdes,   0x400 },
-			{ "rxa",      qmp->serdes,   0x600 },
-			{ "pcs",      qmp->pcs,      0x000 },
-			{ "pcs_usb",  qmp->pcs_usb,  0x000 },
-			{ "pcs_aon",  qmp->pcs_aon,  0x000 },
-		};
-		char l[320];
-		int n = 0, k;
-
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: SS PHY block write test clks=%d", qmp->num_clks);
-		for (k = 0; k < ARRAY_SIZE(bt); k++) {
-			void __iomem *a;
-			u32 before, after;
-
-			if (!bt[k].b)
-				continue;
-			a = bt[k].b + bt[k].o;
-			before = readl_relaxed(a);
-			writel_relaxed(0xa5a5a5a5, a);
-			mb();
-			after = readl_relaxed(a);
-			n += scnprintf(l + n, sizeof(l) - n, " %s%c%08x->%08x",
-				       bt[k].n, after == 0xa5a5a5a5 ? '!' : ':', before, after);
-		}
-		dev_dbg(qmp->dev, "%s\n", l);
-	}
-
-	dev_dbg(qmp->dev, "M2582: com_init enter force=%d init_count=%d clks=%d vregs=%d\n",
-		 force, qmp->init_count, qmp->num_clks, cfg->num_vregs);
 	ret = regulator_bulk_enable(cfg->num_vregs, qmp->vregs);
 	if (ret) {
-		dev_dbg(qmp->dev, "M2582: regulator_bulk_enable FAILED err=%d\n", ret);
 		dev_err(qmp->dev, "failed to enable regulators, err=%d\n", ret);
 		goto err_decrement_count;
 	}
@@ -4090,30 +4012,19 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	 */
 	{
 		struct device_node *np = qmp->dev->of_node;
-		u32 vdd[3], core[3], load = 0;
+		u32 vdd[3], load = 0;
 		int ri;
 
 		if (!of_property_read_u32_array(np, "qcom,vdd-voltage-level", vdd, 3)) {
-			for (ri = 0; ri < cfg->num_vregs; ri++) {
-				int vret = regulator_set_voltage(qmp->vregs[ri].consumer,
-								 vdd[1], vdd[2]);
-				if (vret)
-					dev_dbg(qmp->dev, "M2582: set_voltage[%d] %d\n", ri, vret);
-			}
-			dev_dbg(qmp->dev, "M2582: vdd voltage %u..%u uV\n", vdd[1], vdd[2]);
+			for (ri = 0; ri < cfg->num_vregs; ri++)
+				regulator_set_voltage(qmp->vregs[ri].consumer,
+						     vdd[1], vdd[2]);
 		}
-		if (!of_property_read_u32_array(np, "qcom,core-voltage-level", core, 3))
-			dev_dbg(qmp->dev, "M2582: core voltage %u..%u uV\n", core[1], core[2]);
 		if (!of_property_read_u32(np, "qcom,vdd-max-load-uA", &load)) {
-			for (ri = 0; ri < cfg->num_vregs; ri++) {
-				int lret = regulator_set_load(qmp->vregs[ri].consumer, load);
-				if (lret)
-					dev_dbg(qmp->dev, "M2582: set_load[%d] %d\n", ri, lret);
-			}
-			dev_dbg(qmp->dev, "M2582: vdd load %u uA\n", load);
+			for (ri = 0; ri < cfg->num_vregs; ri++)
+				regulator_set_load(qmp->vregs[ri].consumer, load);
 		}
 	}
-	dev_dbg(qmp->dev, "M2582: com_init regulators ok\n");
 
 	/*
 	 * M2582: do not assert the PHY resets, only release them.
@@ -4224,23 +4135,6 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	}
 
 	/*
-	 * M2582: report the real rate of every clock the PHY depends on. A rate of
-	 * 0 means that clock is not running, and a PHY whose register window is not
-	 * clocked reads back bus garbage (0x49494949 was measured) instead of its
-	 * own registers -- which is exactly what makes every write below a no-op.
-	 */
-	{
-		int ci;
-
-		for (ci = 0; ci < qmp->num_clks; ci++)
-			dev_dbg(qmp->dev, "M2582: phy clk[%d] %-8s rate=%lu\n",
-				ci, qmp->clks[ci].id,
-				qmp->clks[ci].clk ? clk_get_rate(qmp->clks[ci].clk) : 0);
-		dev_dbg(qmp->dev, "M2582: phy pipe_clk rate=%lu\n",
-			qmp->pipe_clk ? clk_get_rate(qmp->pipe_clk) : 0);
-	}
-
-	/*
 	 * M2582: make sure the PHY's clock reference is actually enabled in the
 	 * TCSR block.
 	 *
@@ -4292,14 +4186,8 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 				u32 before = readl(tcsr + refs[ri].off);
 
 				writel(before | BIT(0), tcsr + refs[ri].off);
-				dev_dbg(qmp->dev,
-					 "M2582: TCSR %s clkref 0x%02x: before=%08x after=%08x\n",
-					 refs[ri].name, refs[ri].off, before,
-					 readl(tcsr + refs[ri].off));
 			}
 			iounmap(tcsr);
-		} else {
-			dev_dbg(qmp->dev, "M2582: TCSR ioremap failed\n");
 		}
 	}
 
@@ -4401,41 +4289,6 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 
 	qphy_setbits(qmp->pcs, cfg->regs[QPHY_PCS_POWER_DOWN_CONTROL],
 			SW_PWRDN);
-
-	/*
-	 * M2582: compare our COM block against the vendor's working one, and test
-	 * the exact address its module proved writable.
-	 *
-	 * Vendor ground truth (read inside its running kernel via m2582_peek):
-	 *   com     000=03 004=00 008=01 00c=00 010=03 014=00 018=06 01c=00
-	 *   serdes  000=c0 004=01 008=00 00c=28 010=02 014=16 018=36 01c=04
-	 *   WRITETEST serdes+000 c0c0c0c0 -> a5a5a5a5 ACCEPTED
-	 *
-	 * Ours has only ever been compared on the serdes side, and the earlier
-	 * write test wrote to serdes+0x1000, an address the vendor's probe list did
-	 * not cover. com+0x08 is QPHY_V3_DP_COM_POWER_DOWN_CTRL and reads 0x01 (SW_PWRDN
-	 * set = block powered) in the working stack, so it is the first thing to
-	 * check here.
-	 */
-	{
-		static const u32 comoff[] = { 0x00, 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c,
-					      0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38, 0x3c };
-		char l[300];
-		int n = 0, k;
-
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: ENDTEST com");
-		for (k = 0; k < ARRAY_SIZE(comoff); k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %02x=%08x",
-				       comoff[k], readl_relaxed(qmp->com + comoff[k]));
-		dev_dbg(qmp->dev, "%s\n", l);
-
-		n = 0;
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: ENDTEST serdes");
-		for (k = 0; k < 8; k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %03x=%08x",
-				       k * 4, readl_relaxed(qmp->serdes + k * 4));
-		dev_info(qmp->dev, "%s\n", l);
-	}
 
 	return 0;
 
@@ -4584,59 +4437,6 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 	if (cfg->has_pwrdn_delay)
 		usleep_range(10, 20);
 
-	/*
-	 * M2582: measure HERE, after qmp_configure() has written the 165-entry
-	 * serdes table and the PCS start control.
-	 *
-	 * Every earlier serdes reading was taken at the end of com_init, which runs
-	 * before this function -- so "the table never sticks" was never actually
-	 * measured after the table was written. The write test in com_init now
-	 * reports WRITABLE, so the block does accept writes; what matters is
-	 * whether these values are the table's:
-	 *
-	 *   vendor: 000=c0 004=01 008=00 00c=28 010=02 014=16 018=36 01c=04
-	 */
-	{
-		char l[300];
-		int n = 0, k;
-
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: POSTPO serdes");
-		for (k = 0; k < 8; k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %03x=%08x",
-				       k * 4, readl_relaxed(serdes + k * 4));
-		dev_info(qmp->dev, "%s\n", l);
-
-		n = 0;
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: POSTPO com    ");
-		for (k = 0; k < 8; k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %02x=%08x",
-				       k * 4, readl_relaxed(qmp->com + k * 4));
-		dev_info(qmp->dev, "%s\n", l);
-
-		/*
-		 * M2582: PCS status is what says whether the SuperSpeed PHY is ready.
-		 * The vendor's working state reads 088e9c14 = 84848484 while ours has
-		 * never been compared on this block at all, and the whole difference
-		 * between the two systems is that the vendor's device connects at
-		 * SuperSpeed (usb 4-2) and ours falls back to High Speed (usb 3-2),
-		 * which is also why our DCTL sits in the USB2 LPM branch
-		 * (HIRD_THRES=0xf, NYET_THRES=0) instead of the SS branch.
-		 */
-		n = 0;
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: POSTPO pcs    ");
-		for (k = 0; k < 8; k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %02x=%08x",
-				       0x1c00 + k * 4, readl_relaxed(qmp->pcs + k * 4));
-		dev_info(qmp->dev, "%s\n", l);
-
-		n = 0;
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: POSTPO pusb   ");
-		for (k = 0; k < 8; k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %02x=%08x",
-				       0x1f00 + k * 4, readl_relaxed(qmp->pcs_usb + k * 4));
-		dev_info(qmp->dev, "%s\n", l);
-	}
-
 	/* Pull PHY out of reset state */
 	qphy_clrbits(pcs, cfg->regs[QPHY_SW_RESET], SW_RESET);
 
@@ -4681,41 +4481,13 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 	if (ret) {
 		dev_err(qmp->dev, "phy initialization timed-out\n");
 		/*
-		 * M2582: one single register read. Reading the COM/SERDES/PCS
-		 * registers in bulk was tried and hung a CPU (RCU stalls, NMIs
-		 * unanswered), i.e. touching those windows stalls the interconnect.
-		 * PCS_STATUS is the one that says why the wait failed.
-		 */
-		dev_dbg(qmp->dev, "M2582: PCS_STATUS off=0x%x val=0x%08x (PHYSTATUS=BIT(6)=%d)\n",
-			cfg->regs[QPHY_PCS_STATUS], readl(status),
-			!!(readl(status) & PHYSTATUS));
-		/* Are all four control registers garbage, or only this one? */
-		dev_dbg(qmp->dev, "M2582: pcs 00=%08x 14=%08x 40=%08x 44=%08x\n",
-			readl(qmp->pcs + 0x00), readl(qmp->pcs + 0x14),
-			readl(qmp->pcs + 0x40), readl(qmp->pcs + 0x44));
-		/*
 		 * Note: a writel() probe of a non-repeating value was tried here to
 		 * settle whether these registers are 8-bit wide. It should not be
 		 * repeated: writing to a register whose meaning is unknown is what a
 		 * bring-up should not do, and the board oopsed shortly afterwards
 		 * (x8 = 0101010101010101 in the register dump -- the same byte
 		 * replication) inside dwc3_otg_sm_work -> of_get_next_available_child.
-		 * Reads only from here on.
 		 */
-		dev_dbg(qmp->dev, "M2582: pcs 08=%08x 0c=%08x 10=%08x 18=%08x 1c=%08x\n",
-			readl(qmp->pcs + 0x08), readl(qmp->pcs + 0x0c),
-			readl(qmp->pcs + 0x10), readl(qmp->pcs + 0x18),
-			readl(qmp->pcs + 0x1c));
-		/*
-		 * M2582: does the SERDES block answer at all? The PCS block responds
-		 * with sensible byte values, but the 165-entry factory sequence lives
-		 * in the SERDES window (0x1000..0x1f44) and an earlier bulk read of
-		 * COM/SERDES stalled the bus. Read exactly one register from each of
-		 * the three windows, once, and no writes.
-		 */
-		dev_dbg(qmp->dev, "M2582: window probe serdes+0x00=%08x com+0x00=%08x pcs+0x00=%08x\n",
-			readl(qmp->serdes + 0x00), readl(qmp->com + 0x00),
-			readl(qmp->pcs + 0x00));
 		goto err_disable_pipe_clk;
 	}
 
@@ -4763,8 +4535,6 @@ static int qmp_combo_usb_init(struct phy *phy)
 {
 	struct qmp_combo *qmp = phy_get_drvdata(phy);
 	int ret;
-
-	dev_dbg(qmp->dev, "M2582: qmp_combo_usb_init ENTER\n");
 
 	mutex_lock(&qmp->phy_mutex);
 	ret = qmp_combo_com_init(qmp, false);
@@ -5542,30 +5312,12 @@ static int qmp_combo_parse_dt(struct qmp_combo *qmp)
 	qmp->serdes = base + offs->usb3_serdes;
 
 	/*
-	 * M2582: is the PHY's register block alive BEFORE the DWC3 core binds?
-	 *
-	 * Everything readable now matches the working vendor kernel bit for bit
-	 * (GUSB3PIPECTL0=030c1002, GUSB2PHYCFG0=00102400, GCTL=00102005, all eight
-	 * clocks running, ldob7 at 1.8 V) and yet the PHY still answers reads with
-	 * zeros and discards writes, from the very first touch -- the pre-init dump
-	 * is as dead as the post-init one. So whatever kills it happens earlier than
-	 * our com_init, and the DWC3 core is the prime suspect.
-	 *
-	 * This test runs in the PHY driver's own probe, before dwc3 has bound.
-	 * Writable here means the core is what takes it down afterwards; still dead
-	 * here means it never came up at all.
+	 * M2582: do not write probe values into the PHY from here -- it is live
+	 * configuration. The write tests that used to live here served their
+	 * purpose: with the clocks running the block accepts writes, and after
+	 * power_on every serdes value matches the vendor's working kernel byte for
+	 * byte.
 	 */
-	{
-		/*
-		 * M2582: read-only check. The write tests that used to live here have
-		 * served their purpose: with the clocks running the block accepts
-		 * writes, and after power_on every serdes value matches the vendor's
-		 * working kernel byte for byte. Do not write probe values into the PHY
-		 * from here -- it is live configuration.
-		 */
-		dev_dbg(qmp->dev, "M2582: PROBE read serdes=%08x com=%08x\n",
-			 readl_relaxed(qmp->serdes), readl_relaxed(qmp->com));
-	}
 	qmp->pcs_misc = base + offs->usb3_pcs_misc;
 	qmp->pcs = base + offs->usb3_pcs;
 	if (offs->usb3_pcs_aon)
@@ -5613,16 +5365,9 @@ static int qmp_combo_parse_dt(struct qmp_combo *qmp)
 	{
 		unsigned long cur = clk_get_rate(qmp->pipe_clk);
 		long r = clk_round_rate(qmp->pipe_clk, ULONG_MAX);
-		int rc;
 
-		dev_dbg(dev, "M2582: pipe_clk before cur=%lu round=%ld en=%d\n",
-			 cur, r, __clk_is_enabled(qmp->pipe_clk));
-
-		if (r > 0 && (unsigned long)r != cur) {
-			rc = clk_set_rate(qmp->pipe_clk, (unsigned long)r);
-			dev_dbg(dev, "M2582: pipe_clk set_rate(%ld) rc=%d now=%lu\n",
-				 r, rc, clk_get_rate(qmp->pipe_clk));
-		}
+		if (r > 0 && (unsigned long)r != cur)
+			clk_set_rate(qmp->pipe_clk, (unsigned long)r);
 
 		/*
 		 * The vendor's enable_clks() turns this one on as part of the group
@@ -5630,10 +5375,7 @@ static int qmp_combo_parse_dt(struct qmp_combo *qmp)
 		 * clock is what the SuperSpeed link runs on. Ours reported
 		 * current=0 round=-EINVAL, i.e. never enabled.
 		 */
-		rc = clk_prepare_enable(qmp->pipe_clk);
-		dev_dbg(dev, "M2582: pipe_clk prepare_enable rc=%d now=%lu en=%d\n",
-			 rc, clk_get_rate(qmp->pipe_clk),
-			 __clk_is_enabled(qmp->pipe_clk));
+		clk_prepare_enable(qmp->pipe_clk);
 	}
 
 	return 0;
@@ -5819,10 +5561,6 @@ static int qmp_combo_probe(struct platform_device *pdev)
 		} else {
 			dev_warn(dev, "unable to determine orientation & mode from data-lanes");
 		}
-
-		dev_dbg(dev, "M2582: phy mode=%d orientation=%d (dp_ort=%d usb3_ort=%d)\n",
-			 qmp->qmpphy_mode, qmp->orientation,
-			 dp_orientation, usb3_orientation);
 	}
 
 	ret = drm_aux_bridge_register(dev);

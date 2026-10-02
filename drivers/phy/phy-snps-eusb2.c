@@ -261,60 +261,6 @@ static int m2582_poll(void __iomem *base, u32 offset, u32 mask, bool want_set,
 	return -ETIMEDOUT;
 }
 
-/*
- * M2582: the PHY's APB mailbox. Registers beyond the directly mapped window are
- * reached through it:
- *
- *   0x130  command   (1 = prepare, 3 = execute write, 0 = done)
- *   0x138  address   (which internal PHY register)
- *   0x13c  write data
- *   0x134  status
- *   0x144  read data
- *
- * Transcribed from the vendor's msm_eusb2_phy_notify_connect(), which runs at
- * CONNECT time -- not during init -- and writes internal register 5 twice, first
- * with 0xc0 and then with 0x00. That post-connect tuning is the one part of the
- * vendor's bring-up we had never replicated, and it is the most likely reason
- * this board's link comes up and then cannot carry a transfer.
- */
-static void m2582_apb_write(struct snps_eusb2_hsphy *phy, u8 addr, u8 val)
-{
-	void __iomem *b = phy->base;
-	u32 r;
-
-	r = readl_relaxed(b + 0x130) & ~0xffu;
-	writel_relaxed(r | 0x1, b + 0x130);
-
-	r = readl_relaxed(b + 0x138) & ~0xffu;
-	writel_relaxed(r | addr, b + 0x138);
-
-	r = readl_relaxed(b + 0x13c) & ~0xffu;
-	writel_relaxed(r | val, b + 0x13c);
-
-	r = readl_relaxed(b + 0x130) & ~0xffu;
-	writel_relaxed(r | 0x3, b + 0x130);
-
-	r = readl_relaxed(b + 0x130) & ~0xffu;
-	writel_relaxed(r, b + 0x130);
-}
-
-void m2582_eusb2_notify_connect(struct phy *p)
-{
-	struct snps_eusb2_hsphy *phy = phy_get_drvdata(p);
-
-	if (!phy || !phy->base)
-		return;
-
-	m2582_apb_write(phy, 0x5, 0xc0);
-	m2582_apb_write(phy, 0x5, 0x00);
-
-	dev_dbg(&p->dev,
-		 "M2582: connect-time APB tuning done -> 130=%08x 134=%08x 138=%08x 13c=%08x\n",
-		 readl_relaxed(phy->base + 0x130), readl_relaxed(phy->base + 0x134),
-		 readl_relaxed(phy->base + 0x138), readl_relaxed(phy->base + 0x13c));
-}
-EXPORT_SYMBOL_GPL(m2582_eusb2_notify_connect);
-
 static void snps_eusb2_hsphy_write_mask(void __iomem *base, u32 offset,
 					u32 mask, u32 val)
 {
@@ -329,7 +275,7 @@ static void snps_eusb2_hsphy_write_mask(void __iomem *base, u32 offset,
 	readl_relaxed(base + offset);
 }
 
-static void qcom_eusb2_default_parameters(struct snps_eusb2_hsphy *phy)
+static void __maybe_unused qcom_eusb2_default_parameters(struct snps_eusb2_hsphy *phy)
 {
 	/* default parameters: tx pre-emphasis */
 	snps_eusb2_hsphy_write_mask(phy->base, QCOM_USB_PHY_CFG_CTRL_9,
@@ -523,12 +469,8 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		 * The vendor's very first action, before touching any PHY register:
 		 * msm_eusb2_phy_power(phy, 1), which writes 1 to eud_enable_reg.
 		 */
-		if (phy->eud_enable) {
+		if (phy->eud_enable)
 			writel_relaxed(1, phy->eud_enable);
-			dev_dbg(&p->dev, "M2582: eud_enable written (region 1 mapped)\n");
-		} else {
-			dev_dbg(&p->dev, "M2582: no eud_enable region mapped\n");
-		}
 
 		/*
 		 * The vendor's first block, with its handshakes. After each write it
@@ -649,13 +591,6 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		writel_relaxed(r, phy->base + 0x78);
 		r = readl_relaxed(phy->base + 0x78) & ~0xc0;
 		writel_relaxed(r, phy->base + 0x78);
-
-		dev_dbg(&p->dev,
-			 "M2582: vendor sequence replayed -> 40=%08x 44=%08x 50=%08x 54=%08x 58=%08x 5c=%08x 60=%08x 14=%08x\n",
-			 readl_relaxed(phy->base + 0x40), readl_relaxed(phy->base + 0x44),
-			 readl_relaxed(phy->base + 0x50), readl_relaxed(phy->base + 0x54),
-			 readl_relaxed(phy->base + 0x58), readl_relaxed(phy->base + 0x5c),
-			 readl_relaxed(phy->base + 0x60), readl_relaxed(phy->base + 0x14));
 	}
 
 	snps_eusb2_hsphy_write_mask(phy->base, QCOM_USB_PHY_CFG0,
@@ -753,118 +688,22 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		static const struct { u8 off, val; } v[] = {
 			{ 0x54, 0x4b }, { 0x58, 0x00 }, { 0x64, 0x17 }, { 0x68, 0x21 },
 		};
-		char l[256];
-		int n = 0, k;
-
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: eusb2 before");
-		for (k = 0; k < ARRAY_SIZE(v); k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %02x=%02x",
-				       v[k].off, (u8)readl_relaxed(phy->base + v[k].off));
-		dev_info(&p->dev, "%s\n", l);
+		int k;
 
 		for (k = 0; k < ARRAY_SIZE(v); k++)
 			m2582_write_byte_rep(phy->base, v[k].off, v[k].val);
-
-		n = 0;
-		n += scnprintf(l + n, sizeof(l) - n, "M2582: eusb2 after ");
-		for (k = 0; k < ARRAY_SIZE(v); k++)
-			n += scnprintf(l + n, sizeof(l) - n, " %02x=%02x",
-				       v[k].off, (u8)readl_relaxed(phy->base + v[k].off));
-		dev_info(&p->dev, "%s\n", l);
 	}
 
-	if (0) {
-		unsigned long rate = clk_get_rate(phy->ref_clk);
-		u32 r;
-
-		/*
-		 * M2582: the factory eusb2 node names its clocks "ref_clk_src" /
-		 * "ref_clk" while our tuna drvdata expects "ref" / "ref_gate", and
-		 * the two are not the same source: ours is a 19.2 MHz fixed clock on
-		 * the TCSR USB2 gate, the factory's second clock is a GCC one. The
-		 * vendor driver picks its tuning from clk_get_rate(ref_clk), and the
-		 * two branches write different PHY values, so this is a genuine
-		 * unknown. Allow forcing the 38.4 MHz branch with a device-tree flag
-		 * so both can be measured without rebuilding.
-		 */
-		if (of_property_read_bool(p->dev.of_node, "qcom,ref-clk-38m4"))
-			rate = 38400000;
-
-		if (rate == 19200000) {
-			r = readl_relaxed(phy->base + 0x54) & ~0x70;
-			writel_relaxed(r, phy->base + 0x54);
-
-			m2582_write_byte_rep(phy->base, 0x5c, 0x90);
-			m2582_write_byte_rep(phy->base, 0x60, 0x01);
-		} else if (rate == 38400000) {
-			r = readl_relaxed(phy->base + 0x54) & ~0x8f;
-			r |= 0x40;
-			writel_relaxed(r, phy->base + 0x54);
-
-			m2582_write_byte_rep(phy->base, 0x5c, 0xc8);
-		} else {
-			dev_dbg(&p->dev, "M2582: unexpected ref rate %lu\n", rate);
-		}
-
-		m2582_write_byte_rep(phy->base, 0x60,
-				     (u8)(readl_relaxed(phy->base + 0x60) & ~0xf0));
-		m2582_write_byte_rep(phy->base, 0x58,
-				     (u8)(readl_relaxed(phy->base + 0x58) | 0x2));
-
-		r = readl_relaxed(phy->base + 0x6c) | 0x40;
-		writel_relaxed(r, phy->base + 0x6c);
-
-		r = readl_relaxed(phy->base + 0x64) | 0x10;
-		writel_relaxed(r, phy->base + 0x64);
-
-		r = readl_relaxed(phy->base + 0x7c) & ~0x7;
-		writel_relaxed(r, phy->base + 0x7c);
-		r = readl_relaxed(phy->base + 0x7c) | 0x40;
-		writel_relaxed(r, phy->base + 0x7c);
-		r = readl_relaxed(phy->base + 0x7c) | 0x8;
-		writel_relaxed(r, phy->base + 0x7c);
-
-		r = readl_relaxed(phy->base + 0x78) | 0x18;
-		writel_relaxed(r, phy->base + 0x78);
-		r = readl_relaxed(phy->base + 0x78) & ~0xc0;
-		writel_relaxed(r, phy->base + 0x78);
-
-		/*
-		 * The vendor's tail, transcribed verbatim. Mainline writes these
-		 * same registers but with different bit values, so the PHY does not
-		 * end up in the state the vendor leaves it in.
-		 */
-		r = readl_relaxed(phy->base + 0x64) | 0xc;
-		writel_relaxed(r, phy->base + 0x64);
-
-		r = readl_relaxed(phy->base + 0x3c) | 0x1;
-		writel_relaxed(r, phy->base + 0x3c);
-
-		r = readl_relaxed(phy->base + 0x54) | 0x2;
-		writel_relaxed(r, phy->base + 0x54);
-		r = readl_relaxed(phy->base + 0x54) & ~0x4;
-		writel_relaxed(r, phy->base + 0x54);
-
-		r = readl_relaxed(phy->base + 0x50) & ~0x2;
-		writel_relaxed(r, phy->base + 0x50);
-
-		r = readl_relaxed(phy->base + 0x64) & ~0x8;
-		writel_relaxed(r, phy->base + 0x64);
-		r = readl_relaxed(phy->base + 0x64) & ~0x2;
-		writel_relaxed(r, phy->base + 0x64);
-
-		dev_dbg(&p->dev,
-			 "M2582: vendor datapath tune at %lu Hz -> 54=%08x 58=%08x 5c=%08x 60=%08x 64=%08x 6c=%08x 78=%08x 7c=%08x\n",
-			 rate,
-			 readl_relaxed(phy->base + 0x54),
-			 readl_relaxed(phy->base + 0x58),
-			 readl_relaxed(phy->base + 0x5c),
-			 readl_relaxed(phy->base + 0x60),
-			 readl_relaxed(phy->base + 0x64),
-			 readl_relaxed(phy->base + 0x6c),
-			 readl_relaxed(phy->base + 0x78),
-			 readl_relaxed(phy->base + 0x7c));
-	}
+	/*
+	 * Deliberately no vendor-style "datapath tune" here.
+	 *
+	 * A verbatim transcription of the vendor's tuning sequence (its own
+	 * clk_get_rate(ref_clk) branch plus the register tail) was carried in an
+	 * `if (0)` while the reference clock question was open. It is gone now:
+	 * the board's tcsr-usb2-clkref is 38.4 MHz and the override pairs above
+	 * are what the vendor's own live register values correspond to, so the
+	 * second, conflicting sequence has no reason to exist in the tree.
+	 */
 
 	snps_eusb2_hsphy_write_mask(phy->base, QCOM_USB_PHY_CFG_CTRL_1,
 				    PHY_CFG_PLL_CPBIAS_CNTRL_MASK,
@@ -950,7 +789,7 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 				    CMN_CTRL_OVERRIDE_EN, 0);
 
 	/*
-	 * M2582: poll the eUSB2 PLL for lock and dump the state either way.
+	 * M2582: poll the eUSB2 PLL for lock.
 	 *
 	 * The vendor polls bit 6 of 0x14 for up to 1000 iterations after its
 	 * sequence. Nothing in mainline's driver ever checks it, which is why the
@@ -960,45 +799,25 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 	 */
 	{
 		int i;
-		u32 st = 0;
+		u32 st;
 
 		/*
-		 * Poll far longer than the vendor does (500 ms rather than its 10 ms)
-		 * and log the value as it changes. If a PLL with a marginal reference
-		 * merely takes longer to lock, this will show it; if 0x14 never moves
-		 * at all, the PLL is not running rather than merely slow.
+		 * Poll far longer than the vendor does (500 ms rather than its 10 ms).
+		 * If a PLL with a marginal reference merely takes longer to lock, this
+		 * will wait it out; if 0x14 never moves at all, the PLL is not running
+		 * rather than merely slow.
 		 */
 		for (i = 0; i < 5000; i++) {
 			st = readl_relaxed(phy->base + 0x14);
 			if (st & BIT(6))
 				break;
-			if (i == 500 || i == 1500 || i == 3000)
-				dev_dbg(&p->dev, "M2582: PLL 0x14 still %08x at %d ms\n",
-					 st, i / 10);
 			udelay(100);
 		}
-
-		dev_dbg(&p->dev,
-			 "M2582: eusb2 PLL lock: 0x14=%08x locked=%d after %d polls\n",
-			 st, !!(st & BIT(6)), i);
-		dev_dbg(&p->dev,
-			 "M2582: eusb2 post-init 00=%08x 04=%08x 08=%08x 0c=%08x 10=%08x 14=%08x 18=%08x\n",
-			 readl_relaxed(phy->base + 0x00), readl_relaxed(phy->base + 0x04),
-			 readl_relaxed(phy->base + 0x08), readl_relaxed(phy->base + 0x0c),
-			 readl_relaxed(phy->base + 0x10), readl_relaxed(phy->base + 0x14),
-			 readl_relaxed(phy->base + 0x18));
-		dev_dbg(&p->dev,
-			 "M2582: eusb2 post-init 40=%08x 44=%08x 48=%08x 4c=%08x 50=%08x 54=%08x 58=%08x 5c=%08x 60=%08x\n",
-			 readl_relaxed(phy->base + 0x40), readl_relaxed(phy->base + 0x44),
-			 readl_relaxed(phy->base + 0x48), readl_relaxed(phy->base + 0x4c),
-			 readl_relaxed(phy->base + 0x50), readl_relaxed(phy->base + 0x54),
-			 readl_relaxed(phy->base + 0x58), readl_relaxed(phy->base + 0x5c),
-			 readl_relaxed(phy->base + 0x60));
 	}
 
 	/*
 	 * M2582: re-assert PHY_ENABLE and RETENABLEN (0x54 bits 0 and 3) now that
-	 * everything else is programmed, and verify it sticks.
+	 * everything else is programmed.
 	 *
 	 * Mainline does set PHY_ENABLE|RETENABLEN early in this sequence, but the
 	 * post-init read-back of 0x54 is 0x42 -- bits 0 and 3 are gone. Without
@@ -1008,23 +827,14 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 	 */
 	{
 		u32 before = readl_relaxed(phy->base + 0x54);
-		u32 after;
 
 		writel_relaxed(before | 0x9, phy->base + 0x54);
-		after = readl_relaxed(phy->base + 0x54);
-		dev_dbg(&p->dev,
-			 "M2582: eusb2 0x54 re-enable: before=%08x after=%08x (want bit0|bit3)\n",
-			 before, after);
 	}
 
 	/* M2582: apply the vendor's (value, offset) override pairs. */
-	for (i = 0; i + 1 < phy->param_override_seq_cnt; i += 2) {
+	for (i = 0; i + 1 < phy->param_override_seq_cnt; i += 2)
 		writel_relaxed(phy->param_override_seq[i],
 			       phy->base + phy->param_override_seq[i + 1]);
-		dev_dbg(&p->dev, "M2582: param override %08x -> +0x%x\n",
-			 phy->param_override_seq[i],
-			 phy->param_override_seq[i + 1]);
-	}
 
 	return 0;
 }
@@ -1078,79 +888,30 @@ static int snps_eusb2_hsphy_init(struct phy *p)
 			u32 before = readl_relaxed(tcsr + 0x04);
 
 			writel_relaxed(before | BIT(0), tcsr + 0x04);
-			dev_dbg(&p->dev,
-				 "M2582: TCSR usb2 clkref 0x04: before=%08x after=%08x\n",
-				 before, readl_relaxed(tcsr + 0x04));
 			iounmap(tcsr);
 		}
 	}
 
 	/*
-	 * M2582: report the reference-generator rail but do NOT switch it here.
+	 * M2582: the reference-generator rail is left to the device tree; do NOT
+	 * switch it here.
 	 *
 	 * Enabling it at this point made the DWC3 core soft reset time out
 	 * (probe returned -110, "DWC3 controller soft reset failed"), so the rail
 	 * is instead left always-on from the device tree via regulator-always-on.
-	 * All this does is make the state visible in the report.
 	 */
-	if (phy->vdd_refgen)
-		dev_dbg(&p->dev, "M2582: vdd_refgen present, %d uV, is_enabled=%d\n",
-			 regulator_get_voltage(phy->vdd_refgen),
-			 regulator_is_enabled(phy->vdd_refgen));
-	else
-		dev_dbg(&p->dev, "M2582: no vdd_refgen supply in the device tree\n");
-
-	/* M2582: is the companion repeater actually present and initialised? */
-	dev_dbg(&p->dev, "M2582: eusb2 init, repeater=%px\n", phy->repeater);
 
 	ret = phy_init(phy->repeater);
 	if (ret) {
 		dev_err(&p->dev, "repeater init failed: %d\n", ret);
 		goto disable_vreg;
 	}
-	dev_dbg(&p->dev, "M2582: eusb2 repeater init ok\n");
 
 	ret = clk_bulk_prepare_enable(phy->data->num_clks, phy->clks);
 	if (ret) {
 		dev_err(&p->dev, "failed to enable ref clock: %d\n", ret);
 		goto exit_repeater;
 	}
-
-	/*
-	 * M2582: read-only snapshot of the PHY before anything is written, so the
-	 * pristine state (PLL status, power state, the tuning registers mainline
-	 * never touches) is visible instead of inferred.
-	 */
-	dev_dbg(&p->dev,
-		 "M2582: eusb2 pre-init 00=%08x 04=%08x 08=%08x 0c=%08x 14=%08x 18=%08x\n",
-		 readl_relaxed(phy->base + 0x00), readl_relaxed(phy->base + 0x04),
-		 readl_relaxed(phy->base + 0x08), readl_relaxed(phy->base + 0x0c),
-		 readl_relaxed(phy->base + 0x14), readl_relaxed(phy->base + 0x18));
-	/*
-	 * M2582: is the register block writable at all? Write a distinctive value
-	 * to the (currently zero) APB access command register and read it straight
-	 * back. If it does not stick, the PHY is in an access-inhibited state and
-	 * none of the programming above is reaching the hardware.
-	 */
-	{
-		u32 before = readl_relaxed(phy->base + 0x130);
-
-		writel_relaxed(0x00000004, phy->base + 0x130);
-		dev_dbg(&p->dev,
-			 "M2582: writable test reg130 before=%08x after=%08x (raw readback)\n",
-			 before, readl_relaxed(phy->base + 0x130));
-	}
-
-	dev_dbg(&p->dev,
-		 "M2582: eusb2 pre-init 3c=%08x 50=%08x 54=%08x 58=%08x 5c=%08x 60=%08x 64=%08x 6c=%08x 70=%08x 78=%08x 7c=%08x 94=%08x 98=%08x b8=%08x 130=%08x\n",
-		 readl_relaxed(phy->base + 0x3c), readl_relaxed(phy->base + 0x50),
-		 readl_relaxed(phy->base + 0x54), readl_relaxed(phy->base + 0x58),
-		 readl_relaxed(phy->base + 0x5c), readl_relaxed(phy->base + 0x60),
-		 readl_relaxed(phy->base + 0x64), readl_relaxed(phy->base + 0x6c),
-		 readl_relaxed(phy->base + 0x70), readl_relaxed(phy->base + 0x78),
-		 readl_relaxed(phy->base + 0x7c), readl_relaxed(phy->base + 0x94),
-		 readl_relaxed(phy->base + 0x98), readl_relaxed(phy->base + 0xb8),
-		 readl_relaxed(phy->base + 0x130));
 
 	/*
 	 * M2582: the reset pulse stays -- it is required.

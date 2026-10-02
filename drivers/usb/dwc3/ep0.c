@@ -80,11 +80,8 @@ static int dwc3_ep0_start_trans(struct dwc3_ep *dep)
 		 * never raises XferNotReady(Setup), no endpoint events at all, and
 		 * SET_ADDRESS going unanswered.
 		 *
-		 * Log it, then clear the stale flag and queue the TRB for real.
+		 * Clear the stale flag and queue the TRB for real.
 		 */
-		dev_dbg(dep->dwc->dev,
-			 "M2582: ep0 start_trans stale flag, ep0state=%d trb_enq=%u trb_deq=%u\n",
-			 dep->dwc->ep0state, dep->trb_enqueue, dep->trb_dequeue);
 		dep->flags &= ~DWC3_EP_TRANSFER_STARTED;
 	}
 
@@ -298,9 +295,6 @@ void dwc3_ep0_out_start(struct dwc3 *dwc)
 	struct dwc3_ep			*dep;
 	int				ret;
 	int                             i;
-
-	dev_dbg(dwc->dev, "M2582: ep0_out_start state=%d flags=%08x\n",
-		 dwc->ep0state, dwc->eps[0]->flags);
 
 	complete(&dwc->ep0_in_setup);
 
@@ -849,15 +843,6 @@ static void dwc3_ep0_inspect_setup(struct dwc3 *dwc,
 	int ret = -EINVAL;
 	u32 len;
 
-	/* M2582: is the setup packet ever inspected, and with what state? */
-	dev_dbg(dwc->dev,
-		 "M2582: ep0 setup drv=%d softconnect=%d connected=%d state=%d "
-		 "bRequestType=%02x bRequest=%02x wValue=%04x wIndex=%04x wLength=%04x\n",
-		 !!dwc->gadget_driver, dwc->softconnect, dwc->connected,
-		 dwc->ep0state, ctrl->bRequestType, ctrl->bRequest,
-		 le16_to_cpu(ctrl->wValue), le16_to_cpu(ctrl->wIndex),
-		 le16_to_cpu(ctrl->wLength));
-
 	if (!dwc->gadget_driver || !dwc->softconnect || !dwc->connected)
 		goto out;
 
@@ -1169,11 +1154,6 @@ void dwc3_ep0_end_control_data(struct dwc3 *dwc, struct dwc3_ep *dep)
 static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
-	/* M2582: EP0's XferNotReady drives the control transfer state machine. */
-	dev_dbg(dwc->dev,
-		 "M2582: ep0 notready status=%u state=%d ep0_next=%d\n",
-		 event->status, dwc->ep0state, dwc->ep0_next_event);
-
 	switch (event->status) {
 	case DEPEVT_STATUS_CONTROL_DATA:
 		if (!dwc->softconnect || !dwc->connected)
@@ -1250,19 +1230,6 @@ void dwc3_ep0_interrupt(struct dwc3 *dwc,
 	 * one byte higher and use it if it is a valid endpoint event code.
 	 */
 	u32 evt = event->endpoint_event;
-	static int m2582_ep0_log;
-
-	if (m2582_ep0_log < 12) {
-		const u32 *w = (const u32 *)event;
-
-		m2582_ep0_log++;
-		dev_dbg(dwc->dev,
-			 "M2582: ep0ent[%02d] raw=%08x num=%u type=%u status=%u alt8=%u "
-			 "w1=%08x w2=%08x\n",
-			 m2582_ep0_log, *w, event->endpoint_number,
-			 event->endpoint_event, event->status,
-			 (*w >> 8) & 0xf, w[1], w[2]);
-	}
 
 	if (evt == 0) {
 		u32 alt = (*(const u32 *)event >> 8) & 0xf;
@@ -1293,47 +1260,6 @@ void dwc3_ep0_interrupt(struct dwc3 *dwc,
 		}
 		break;
 	default:
-		/* M2582: this fires hundreds of times a second while no gadget driver
-		 * is bound; printing each one starves the console and delays the
-		 * userspace gadget setup that would stop it. */
-		{
-			/* M2582: EP0 gets the same zero-typed events. Print the raw word
-			 * and the core's byte count to separate "core wrote nothing"
-			 * from "driver decoded wrongly". */
-			const u32 *raw = (const u32 *)event;
-
-			{
-				struct dwc3_event_buffer *eb = dwc->ev_buf;
-				const u32 *dma = eb ? (const u32 *)eb->buf : NULL;
-				const u32 *cch = eb ? (const u32 *)eb->cache : NULL;
-
-				dev_err_ratelimited(dwc->dev,
-					"M2582: ep0 evtw[0..7]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
-					raw[0], raw[1], raw[2], raw[3],
-					raw[4], raw[5], raw[6], raw[7]);
-				dev_err_ratelimited(dwc->dev,
-					"unknown endpoint event %d (ep0) raw=%08x evtcount=%08x "
-					"lpos=%u count=%u len=%u dma=%pad dma[0..3]=%08x %08x %08x %08x "
-					"cache[0..3]=%08x %08x %08x %08x\n",
-					event->endpoint_event, *raw,
-					dwc3_readl(dwc->regs, DWC3_GEVNTCOUNT(0)),
-					eb ? eb->lpos : 0, eb ? eb->count : 0,
-					eb ? eb->length : 0, eb ? &eb->dma : NULL,
-					dma ? dma[0] : 0, dma ? dma[1] : 0,
-					dma ? dma[2] : 0, dma ? dma[3] : 0,
-					cch ? cch[0] : 0, cch ? cch[1] : 0,
-					cch ? cch[2] : 0, cch ? cch[3] : 0);
-				dev_err_ratelimited(dwc->dev,
-					"M2582: core-state dctl=%08x dsts=%08x dcfg=%08x gctl=%08x "
-					"devten=%08x dr_mode=%d speed=%d\n",
-					dwc3_readl(dwc->regs, DWC3_DCTL),
-					dwc3_readl(dwc->regs, DWC3_DSTS),
-					dwc3_readl(dwc->regs, DWC3_DCFG),
-					dwc3_readl(dwc->regs, DWC3_GCTL),
-					dwc3_readl(dwc->regs, DWC3_DEVTEN),
-					dwc->dr_mode, dwc->gadget->speed);
-			}
-		}
 		break;
 	}
 }

@@ -25,18 +25,6 @@
 #include "debug.h"
 #include "core.h"
 
-/* M2582: provided by phy-snps-eusb2.c, see the connect-time APB tuning there. */
-void m2582_eusb2_notify_connect(struct phy *p);
-
-/*
- * M2582: whether the one-off EP0 transfer-resource release has been done.
- *
- * It must run once per boot, on the first connect-done, and never again: the
- * event repeats several times per connection and repeating the repair aborts
- * the control transfers the host is in the middle of, which shows up as
- * "Device not responding to setup address" / error -71 during SET_ADDRESS.
- */
-static bool m2582_ep0_repaired;
 #include "gadget.h"
 #include "io.h"
 
@@ -178,10 +166,6 @@ static void dwc3_ep0_reset_state(struct dwc3 *dwc)
 	 * run again. The re-arm now happens at the end of the connect-done
 	 * handler instead, once EP0 has its resource back.
 	 */
-	dev_dbg(dwc->dev,
-		 "M2582: ep0_reset_state in SETUP_PHASE (enq=%u deq=%u flags=%08x) -- re-arm deferred to connect-done\n",
-		 dwc->eps[0]->trb_enqueue, dwc->eps[0]->trb_dequeue,
-		 dwc->eps[0]->flags);
 }
 
 /**
@@ -404,18 +388,6 @@ int dwc3_send_gadget_ep_cmd(struct dwc3_ep *dep, unsigned int cmd,
 	else
 		cmd |= DWC3_DEPCMD_CMDACT;
 
-	/*
-	 * M2582: for EP0/EP1 show exactly what we ask the core to do and what it
-	 * answers. DEPCMD's status field carries the command result (0 = success,
-	 * 1 = DEPEVT_TRANSFER_NO_RESOURCE is what we keep getting for EP0's
-	 * STARTTRANSFER), and bits [22:16] carry the allocated resource index.
-	 */
-	if (dep->number <= 1)
-		dev_dbg(dwc->dev,
-			 "M2582: depcmd send ep%d cmd=%08x par0=%08x par1=%08x par2=%08x\n",
-			 dep->number, cmd, params->param0, params->param1,
-			 params->param2);
-
 	dwc3_writel(dep->regs, DWC3_DEPCMD, cmd);
 
 	if (!(cmd & DWC3_DEPCMD_CMDACT) ||
@@ -429,12 +401,6 @@ int dwc3_send_gadget_ep_cmd(struct dwc3_ep *dep, unsigned int cmd,
 		reg = dwc3_readl(dep->regs, DWC3_DEPCMD);
 		if (!(reg & DWC3_DEPCMD_CMDACT)) {
 			cmd_status = DWC3_DEPCMD_STATUS(reg);
-
-			if (dep->number <= 1)
-				dev_dbg(dwc->dev,
-					 "M2582: depcmd done ep%d raw=%08x status=%d rsc=%u\n",
-					 dep->number, reg, cmd_status,
-					 DWC3_DEPCMD_GET_RSC_IDX(reg));
 
 			switch (cmd_status) {
 			case 0:
@@ -2904,12 +2870,6 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	 *
 	 * exactly as observed, with the gadget bound and the link at high speed.
 	 */
-	dev_dbg(dwc->dev,
-		 "M2582: pullup(%d) ret=%d DCTL=%08x DEVTEN=%08x DSTS=%08x softconnect=%d\n",
-		 is_on, ret, dwc3_readl(dwc->regs, DWC3_DCTL),
-		 dwc3_readl(dwc->regs, DWC3_DEVTEN),
-		 dwc3_readl(dwc->regs, DWC3_DSTS), dwc->softconnect);
-
 	pm_runtime_put(dwc->dev);
 
 	return ret;
@@ -3122,7 +3082,7 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	 *     dwc3 { extcon = <&...>; usb-role-switch; dr_mode = "otg"; ... }
 	 *
 	 * The symptom matches exactly. The on-screen log shows the configfs bind
-	 * succeeding ("late bind UDC rc=0") and then no "M2582: pullup" line at
+	 * succeeding ("late bind UDC rc=0") and then no M2582: pullup line at
 	 * all -- not a delayed one, not a failed one, none -- and the UDC reports
 	 * "not attached" for the rest of the boot, while the host only enumerates
 	 * about 40 s later through some other path.
@@ -3976,37 +3936,6 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 	struct dwc3_ep		*dep;
 	u8			epnum = event->endpoint_number;
 
-	/*
-	 * M2582: log every endpoint event at the door, before anything can drop it.
-	 *
-	 * Everything downstream can silently discard an event: the lookup can fail,
-	 * an un-enabled endpoint returns early further down, and the type switch
-	 * falls through to a ratelimited "unknown endpoint event" that never fires
-	 * for the first few. The result is that EP0's state machine never advances
-	 * -- no XferNotReady, no SETUP inspection, no answer to GET_DESCRIPTOR or
-	 * SET_ADDRESS -- while the host sits at
-	 *
-	 *     usb 3-2: device descriptor read/64, error -71
-	 *
-	 * This prints the raw word and both candidate decodings for the first few
-	 * events so the layout can be settled from data instead of inference.
-	 */
-	{
-		static int m2582_epev_log;
-
-		if (m2582_epev_log < 10) {
-			const u32 *w = (const u32 *)event;
-
-			m2582_epev_log++;
-			dev_dbg(dwc->dev,
-				 "M2582: epev[%02d] raw=%08x num=%u type=%u status=%u "
-				 "alt_num=%u alt_type=%u dep=%s\n",
-				 m2582_epev_log, *w, epnum, event->endpoint_event,
-				 event->status, (*w >> 3) & 0x1f, (*w >> 8) & 0xf,
-				 dwc->eps[epnum] ? "yes" : "NULL");
-		}
-	}
-
 	dep = dwc->eps[epnum];
 	if (!dep) {
 		dev_warn(dwc->dev, "spurious event, endpoint %u is not allocated\n", epnum);
@@ -4014,21 +3943,8 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 	}
 
 	if (!(dep->flags & DWC3_EP_ENABLED)) {
-		if ((epnum > 1) && !(dep->flags & DWC3_EP_TRANSFER_STARTED)) {
-			/*
-			 * M2582: this is where EP0 events disappear if endpoint_number is
-			 * decoded wrongly -- the event is dropped with no trace at all.
-			 */
-			static int m2582_drop_log;
-
-			if (m2582_drop_log < 6) {
-				m2582_drop_log++;
-				dev_dbg(dwc->dev,
-					 "M2582: epev DROPPED epnum=%u type=%u (not enabled)\n",
-					 epnum, event->endpoint_event);
-			}
+		if ((epnum > 1) && !(dep->flags & DWC3_EP_TRANSFER_STARTED))
 			return;
-		}
 
 		/* Handle only EPCMDCMPLT when EP disabled */
 		if ((event->endpoint_event != DWC3_DEPEVT_EPCMDCMPLT) &&
@@ -4328,27 +4244,12 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	u8			lanes = 1;
 	u8			speed;
 
-	dev_dbg(dwc->dev,
-		 "M2582: conndone softconnect=%d dsts=%08x dctl=%08x devten=%08x ep0flags=%08x speed=%d "
-		 "gctl=%08x dcfg=%08x gusb2phycfg0=%08x gusb3pipectl0=%08x\n",
-		 dwc->softconnect,
-		 dwc3_readl(dwc->regs, DWC3_DSTS),
-		 dwc3_readl(dwc->regs, DWC3_DCTL),
-		 dwc3_readl(dwc->regs, DWC3_DEVTEN),
-		 dwc->eps[0] ? dwc->eps[0]->flags : 0xdeadbeef,
-		 dwc->speed,
-		 dwc3_readl(dwc->regs, DWC3_GCTL),
-		 dwc3_readl(dwc->regs, DWC3_DCFG),
-		 dwc3_readl(dwc->regs, DWC3_GUSB2PHYCFG(0)),
-		 dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0)));
-
 	if (!dwc->softconnect)
 		return;
 
 	reg = dwc3_readl(dwc->regs, DWC3_DSTS);
 	speed = reg & DWC3_DSTS_CONNECTSPD;
 	dwc->speed = speed;
-	dev_dbg(dwc->dev, "M2582: conndone speed field = %u (3=HS 4=SS 5=SSP)\n", speed);
 
 	if (DWC3_IP_IS(DWC32))
 		lanes = DWC3_DSTS_CONNLANES(reg) + 1;
@@ -4476,8 +4377,6 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		dev_err(dwc->dev, "failed to enable %s\n", dep->name);
 		return;
 	}
-	dev_dbg(dwc->dev, "M2582: ep0 enabled, resource_index=%u\n",
-		 dep->resource_index);
 
 	dep = dwc->eps[1];
 	ret = __dwc3_gadget_ep_enable(dep, DWC3_DEPCFG_ACTION_MODIFY);
@@ -4485,8 +4384,6 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		dev_err(dwc->dev, "failed to enable %s\n", dep->name);
 		return;
 	}
-	dev_dbg(dwc->dev, "M2582: ep1 enabled, resource_index=%u\n",
-		 dep->resource_index);
 
 	/*
 	 * M2582: EP0 now has its resource back, so queue the setup TRB.
@@ -4519,46 +4416,23 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	{
 		u32 susp = dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0));
 
-		if (susp & DWC3_GUSB3PIPECTL_SUSPHY) {
+		if (susp & DWC3_GUSB3PIPECTL_SUSPHY)
 			dwc3_writel(dwc->regs, DWC3_GUSB3PIPECTL(0),
 				    susp & ~DWC3_GUSB3PIPECTL_SUSPHY);
-			dev_dbg(dwc->dev,
-				 "M2582: conndone SUSPHY cleared %08x -> %08x\n",
-				 susp, dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0)));
-		} else {
-			dev_dbg(dwc->dev, "M2582: conndone SUSPHY already clear (%08x)\n",
-				 susp);
-		}
 	}
 
 	/*
-	 * M2582: run the vendor's post-connect PHY tuning. Its driver performs
-	 * two APB-mailbox writes at connect time (internal register 5, 0xc0 then
-	 * 0x00) and we had never replicated that step.
-	 */
-	/*
-	 * M2582: DISABLED -- do not poke the eUSB2 PHY on every connect-done.
+	 * Deliberately no vendor-style post-connect PHY tuning here.
 	 *
-	 * This called m2582_eusb2_notify_connect(), which performs two APB-mailbox
-	 * writes (internal register 5, 0xc0 then 0x00) every time connect-done
-	 * fires. Connect-done fires repeatedly within milliseconds during
-	 * enumeration, so the PHY is being reprogrammed while the host is talking
-	 * to it. The host's log shows exactly that pattern: the device attaches at
-	 * high speed, drops back to full speed, and repeats.
-	 *
-	 * The block was added late in this bring-up, which also fits the board
-	 * having enumerated once at 09:58 and never again. The vendor's own
-	 * notify_connect does set a flag and call the notifier chain, but there is
-	 * no measurement showing its APB writes are needed for enumeration, and
-	 * every PHY register already matches the vendor's working state without
-	 * them. Remove the poking and see whether the link holds.
+	 * The vendor performs two APB-mailbox writes at connect time (internal
+	 * register 5, 0xc0 then 0x00). Replicating that was tried and removed:
+	 * connect-done fires repeatedly within milliseconds during enumeration,
+	 * so the PHY was being reprogrammed while the host was talking to it,
+	 * and the link attached at high speed, dropped to full speed and
+	 * repeated. Every PHY register already matches the vendor's working
+	 * state without those writes.
 	 */
-	if (0 && dwc->usb2_generic_phy)
-		m2582_eusb2_notify_connect(dwc->usb2_generic_phy);
 
-	dev_dbg(dwc->dev, "M2582: conndone re-arming ep0 (enq=%u deq=%u flags=%08x)\n",
-		 dwc->eps[0]->trb_enqueue, dwc->eps[0]->trb_dequeue,
-		 dwc->eps[0]->flags);
 	/*
 	 * M2582: this repair is needed ONCE, not on every connect-done.
 	 *
@@ -4587,11 +4461,9 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	{
 		struct dwc3_gadget_ep_cmd_params p = { };
 		u32 ecmd = DWC3_DEPCMD_ENDTRANSFER;
-		int eret;
 
 		ecmd |= DWC3_DEPCMD_PARAM(dwc->eps[0]->resource_index);
-		eret = dwc3_send_gadget_ep_cmd(dwc->eps[0], ecmd, &p);
-		dev_dbg(dwc->dev, "M2582: ep0 forced ENDTRANSFER -> %d\n", eret);
+		dwc3_send_gadget_ep_cmd(dwc->eps[0], ecmd, &p);
 
 		/*
 		 * Use stall-and-restart rather than a bare out_start: the first
@@ -4603,8 +4475,6 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		 * queued and no XferNotReady(Setup) is ever raised.
 		 */
 		dwc3_ep0_stall_and_restart(dwc);
-		dev_dbg(dwc->dev, "M2582: ep0 repaired (resource_index=%u flags=%08x)\n",
-			 dwc->eps[0]->resource_index, dwc->eps[0]->flags);
 	}
 
 	/*
@@ -4742,14 +4612,6 @@ static void dwc3_gadget_linksts_change_interrupt(struct dwc3 *dwc,
 static void dwc3_gadget_suspend_interrupt(struct dwc3 *dwc,
 					  unsigned int evtinfo)
 {
-	dev_dbg(dwc->dev,
-		 "M2582: suspend-int dsts=%08x dctl=%08x devten=%08x ep0flags=%08x softconnect=%d\n",
-		 dwc3_readl(dwc->regs, DWC3_DSTS),
-		 dwc3_readl(dwc->regs, DWC3_DCTL),
-		 dwc3_readl(dwc->regs, DWC3_DEVTEN),
-		 dwc->eps[0] ? dwc->eps[0]->flags : 0xdeadbeef,
-		 dwc->softconnect);
-
 	enum dwc3_link_state next = evtinfo & DWC3_LINK_STATE_MASK;
 
 	if (!dwc->suspended && next == DWC3_LINK_STATE_U3) {
@@ -4801,31 +4663,6 @@ static void dwc3_process_event_entry(struct dwc3 *dwc,
 		const union dwc3_event *event)
 {
 	trace_dwc3_event(event->raw, dwc);
-
-	/*
-	 * M2582: log the first events in full. The EP0 log shows raw=00000000
-	 * while the DMA buffer starts with a repeating 0x00009001, so the driver
-	 * is not reading where the pattern is. Recording every event word, with
-	 * the buffer position it came from, shows whether real events exist at all
-	 * or whether every consumed slot is zero.
-	 */
-	{
-		static int m2582_evt_log;
-
-		if (m2582_evt_log < 30) {
-			struct dwc3_event_buffer *eb = dwc->ev_buf;
-
-			m2582_evt_log++;
-			dev_dbg(dwc->dev,
-				 "M2582: evt[%02d] raw=%08x lpos=%u count=%u is_devspec=%u type=%u "
-				 "devt7=%u devt15=%u\n",
-				 m2582_evt_log, event->raw,
-				 eb ? eb->lpos : 0, eb ? eb->count : 0,
-				 event->type.is_devspec, event->type.type,
-				 event->devt.device_event,
-				 (event->raw >> 8) & 0xff);
-		}
-	}
 
 	if (!event->type.is_devspec)
 		dwc3_endpoint_interrupt(dwc, &event->depevt);
