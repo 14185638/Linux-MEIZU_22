@@ -127,6 +127,15 @@ config USB_DWC3_ST
 	  inside (i.e. STiH407).
 	  Say 'Y' or 'M' if you have one such device.
 
+config USB_DWC3_MSM
+	tristate "QTI MSM platforms (M2582 bring-up port)"
+	depends on ARCH_QCOM || COMPILE_TEST
+	help
+	  Port of Qualcomm's dwc3-msm glue for the Meizu 22 bring-up. Unlike
+	  mainline's dwc3-qcom it drives the clock/reset/DBM sequence the vendor
+	  uses, which is what lets the DWC3 core soft reset complete on this
+	  part. GSI offload, redriver, PMIC USB switch and EUD are stubbed out.
+
 config USB_DWC3_QCOM
 	tristate "Qualcomm Platform"
 	depends on ARCH_QCOM || COMPILE_TEST

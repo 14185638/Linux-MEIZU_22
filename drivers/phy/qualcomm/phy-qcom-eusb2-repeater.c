@@ -122,6 +122,28 @@ static const struct eusb2_repeater_cfg smb2370_eusb2_cfg = {
 	.num_vregs	= ARRAY_SIZE(pm8550b_vreg_l),
 };
 
+static const struct eusb2_repeater_init_tbl_reg pmih010x_init_tbl[] = {
+	{ 0x50, 0x00 },
+	{ 0x51, 0x0e },
+	{ 0x52, 0x01 },
+	{ 0x53, 0x07 },
+	{ 0x54, 0x03 },
+	{ 0x55, 0x03 },
+	{ 0x56, 0x00 },
+	{ 0x57, 0x07 },
+	{ 0x58, 0x02 },
+	{ 0x59, 0x03 },
+	{ 0x5a, 0x01 },
+	{ 0x5b, 0x02 },
+};
+
+static const struct eusb2_repeater_cfg pmih010x_eusb2_cfg = {
+	.init_tbl = pmih010x_init_tbl,
+	.init_tbl_num = ARRAY_SIZE(pmih010x_init_tbl),
+	.vreg_list = pm8550b_vreg_l,
+	.num_vregs = ARRAY_SIZE(pm8550b_vreg_l),
+};
+
 static int eusb2_repeater_init_vregs(struct eusb2_repeater *rptr)
 {
 	int num = rptr->cfg->num_vregs;
@@ -303,6 +325,9 @@ static void eusb2_repeater_remove(struct platform_device *pdev)
 
 static const struct of_device_id eusb2_repeater_of_match_table[] = {
 	{
+		.compatible = "qcom,pmih010x-eusb2-repeater",
+		.data = &pmih010x_eusb2_cfg,
+	}, {
 		.compatible = "qcom,pm8550b-eusb2-repeater",
 		.data = &pm8550b_eusb2_cfg,
 	},

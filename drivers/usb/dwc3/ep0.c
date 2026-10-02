@@ -68,8 +68,25 @@ static int dwc3_ep0_start_trans(struct dwc3_ep *dep)
 	struct dwc3			*dwc;
 	int				ret;
 
-	if (dep->flags & DWC3_EP_TRANSFER_STARTED)
-		return 0;
+	if (dep->flags & DWC3_EP_TRANSFER_STARTED) {
+		/*
+		 * M2582: returning here without queueing a TRB is silent, and it is
+		 * how EP0 ends up permanently unarmed: the first
+		 * dwc3_ep0_out_start() at gadget start sets
+		 * DWC3_EP_TRANSFER_STARTED, a USB reset then discards that queued
+		 * TRB, and every later re-arm quietly does nothing because the flag
+		 * is still set. dwc3_stop_active_transfers() starts its loop at epnum
+		 * 2, so nothing ever clears it for EP0. The result is a core that
+		 * never raises XferNotReady(Setup), no endpoint events at all, and
+		 * SET_ADDRESS going unanswered.
+		 *
+		 * Log it, then clear the stale flag and queue the TRB for real.
+		 */
+		dev_info(dep->dwc->dev,
+			 "M2582: ep0 start_trans stale flag, ep0state=%d trb_enq=%u trb_deq=%u\n",
+			 dep->dwc->ep0state, dep->trb_enqueue, dep->trb_dequeue);
+		dep->flags &= ~DWC3_EP_TRANSFER_STARTED;
+	}
 
 	dwc = dep->dwc;
 
@@ -94,7 +111,6 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 	req->request.actual	= 0;
 	req->request.status	= -EINPROGRESS;
 	req->epnum		= dep->number;
-	req->status		= DWC3_REQUEST_STATUS_QUEUED;
 
 	list_add_tail(&req->list, &dep->pending_list);
 
@@ -146,7 +162,7 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 	 * Unfortunately we have uncovered a limitation wrt the Data Phase.
 	 *
 	 * Section 9.4 says we can wait for the XferNotReady(DATA) event to
-	 * come before issuing Start Transfer command, but if we do, we will
+	 * come before issueing Start Transfer command, but if we do, we will
 	 * miss situations where the host starts another SETUP phase instead of
 	 * the DATA phase.  Such cases happen at least on TD.7.6 of the Link
 	 * Layer Compliance Suite.
@@ -283,6 +299,9 @@ void dwc3_ep0_out_start(struct dwc3 *dwc)
 	int				ret;
 	int                             i;
 
+	dev_dbg(dwc->dev, "M2582: ep0_out_start state=%d flags=%08x\n",
+		 dwc->ep0state, dwc->eps[0]->flags);
+
 	complete(&dwc->ep0_in_setup);
 
 	dep = dwc->eps[0];
@@ -361,7 +380,7 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 
 		if ((dwc->speed == DWC3_DSTS_SUPERSPEED) ||
 		    (dwc->speed == DWC3_DSTS_SUPERSPEED_PLUS)) {
-			reg = dwc3_readl(dwc, DWC3_DCTL);
+			reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 			if (reg & DWC3_DCTL_INITU1ENA)
 				usb_status |= 1 << USB_DEV_STAT_U1_ENABLED;
 			if (reg & DWC3_DCTL_INITU2ENA)
@@ -417,12 +436,12 @@ static int dwc3_ep0_handle_u1(struct dwc3 *dwc, enum usb_device_state state,
 	if (set && dwc->dis_u1_entry_quirk)
 		return -EINVAL;
 
-	reg = dwc3_readl(dwc, DWC3_DCTL);
+	reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 	if (set)
 		reg |= DWC3_DCTL_INITU1ENA;
 	else
 		reg &= ~DWC3_DCTL_INITU1ENA;
-	dwc3_writel(dwc, DWC3_DCTL, reg);
+	dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 
 	return 0;
 }
@@ -441,12 +460,12 @@ static int dwc3_ep0_handle_u2(struct dwc3 *dwc, enum usb_device_state state,
 	if (set && dwc->dis_u2_entry_quirk)
 		return -EINVAL;
 
-	reg = dwc3_readl(dwc, DWC3_DCTL);
+	reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 	if (set)
 		reg |= DWC3_DCTL_INITU2ENA;
 	else
 		reg &= ~DWC3_DCTL_INITU2ENA;
-	dwc3_writel(dwc, DWC3_DCTL, reg);
+	dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 
 	return 0;
 }
@@ -612,10 +631,10 @@ static int dwc3_ep0_set_address(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		return -EINVAL;
 	}
 
-	reg = dwc3_readl(dwc, DWC3_DCFG);
+	reg = dwc3_readl(dwc->regs, DWC3_DCFG);
 	reg &= ~(DWC3_DCFG_DEVADDR_MASK);
 	reg |= DWC3_DCFG_DEVADDR(addr);
-	dwc3_writel(dwc, DWC3_DCFG, reg);
+	dwc3_writel(dwc->regs, DWC3_DCFG, reg);
 
 	if (addr)
 		usb_gadget_set_state(dwc->gadget, USB_STATE_ADDRESS);
@@ -672,12 +691,12 @@ static int dwc3_ep0_set_config(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 			 * Enable transition to U1/U2 state when
 			 * nothing is pending from application.
 			 */
-			reg = dwc3_readl(dwc, DWC3_DCTL);
+			reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 			if (!dwc->dis_u1_entry_quirk)
 				reg |= DWC3_DCTL_ACCEPTU1ENA;
 			if (!dwc->dis_u2_entry_quirk)
 				reg |= DWC3_DCTL_ACCEPTU2ENA;
-			dwc3_writel(dwc, DWC3_DCTL, reg);
+			dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 		}
 		break;
 
@@ -717,7 +736,7 @@ static void dwc3_ep0_set_sel_cmpl(struct usb_ep *ep, struct usb_request *req)
 	dwc->u2sel = le16_to_cpu(timing.u2sel);
 	dwc->u2pel = le16_to_cpu(timing.u2pel);
 
-	reg = dwc3_readl(dwc, DWC3_DCTL);
+	reg = dwc3_readl(dwc->regs, DWC3_DCTL);
 	if (reg & DWC3_DCTL_INITU2ENA)
 		param = dwc->u2pel;
 	if (reg & DWC3_DCTL_INITU1ENA)
@@ -830,10 +849,19 @@ static void dwc3_ep0_inspect_setup(struct dwc3 *dwc,
 	int ret = -EINVAL;
 	u32 len;
 
+	/* M2582: is the setup packet ever inspected, and with what state? */
+	dev_dbg(dwc->dev,
+		 "M2582: ep0 setup drv=%d softconnect=%d connected=%d state=%d "
+		 "bRequestType=%02x bRequest=%02x wValue=%04x wIndex=%04x wLength=%04x\n",
+		 !!dwc->gadget_driver, dwc->softconnect, dwc->connected,
+		 dwc->ep0state, ctrl->bRequestType, ctrl->bRequest,
+		 le16_to_cpu(ctrl->wValue), le16_to_cpu(ctrl->wIndex),
+		 le16_to_cpu(ctrl->wLength));
+
 	if (!dwc->gadget_driver || !dwc->softconnect || !dwc->connected)
 		goto out;
 
-	trace_dwc3_ctrl_req(dwc, ctrl);
+	trace_dwc3_ctrl_req(ctrl);
 
 	len = le16_to_cpu(ctrl->wLength);
 	if (!len) {
@@ -1141,6 +1169,11 @@ void dwc3_ep0_end_control_data(struct dwc3 *dwc, struct dwc3_ep *dep)
 static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
+	/* M2582: EP0's XferNotReady drives the control transfer state machine. */
+	dev_dbg(dwc->dev,
+		 "M2582: ep0 notready status=%u state=%d ep0_next=%d\n",
+		 event->status, dwc->ep0state, dwc->ep0_next_event);
+
 	switch (event->status) {
 	case DEPEVT_STATUS_CONTROL_DATA:
 		if (!dwc->softconnect || !dwc->connected)
@@ -1204,8 +1237,41 @@ void dwc3_ep0_interrupt(struct dwc3 *dwc,
 {
 	struct dwc3_ep	*dep = dwc->eps[event->endpoint_number];
 	u8		cmd;
+	/*
+	 * M2582: this core reports endpoint events whose type does not appear in
+	 * dwc3_event_depevt.endpoint_event (bits [9:6]) -- that field reads 0, the
+	 * reserved value, for every EP0 event, so the switch below always falls
+	 * through to default and EP0's state machine never advances (no
+	 * XferNotReady, no setup inspection, no answer to SET_ADDRESS). The device
+	 * events from the same core do carry valid codes, but in bits [11:8]
+	 * instead of [7:1].
+	 *
+	 * So when the standard field is the reserved 0, try the same 4-bit field
+	 * one byte higher and use it if it is a valid endpoint event code.
+	 */
+	u32 evt = event->endpoint_event;
+	static int m2582_ep0_log;
 
-	switch (event->endpoint_event) {
+	if (m2582_ep0_log < 12) {
+		const u32 *w = (const u32 *)event;
+
+		m2582_ep0_log++;
+		dev_dbg(dwc->dev,
+			 "M2582: ep0ent[%02d] raw=%08x num=%u type=%u status=%u alt8=%u "
+			 "w1=%08x w2=%08x\n",
+			 m2582_ep0_log, *w, event->endpoint_number,
+			 event->endpoint_event, event->status,
+			 (*w >> 8) & 0xf, w[1], w[2]);
+	}
+
+	if (evt == 0) {
+		u32 alt = (*(const u32 *)event >> 8) & 0xf;
+
+		if (alt >= DWC3_DEPEVT_XFERCOMPLETE && alt <= DWC3_DEPEVT_EPCMDCMPLT)
+			evt = alt;
+	}
+
+	switch (evt) {
 	case DWC3_DEPEVT_XFERCOMPLETE:
 		dwc3_ep0_xfer_complete(dwc, event);
 		break;
@@ -1227,7 +1293,47 @@ void dwc3_ep0_interrupt(struct dwc3 *dwc,
 		}
 		break;
 	default:
-		dev_err(dwc->dev, "unknown endpoint event %d\n", event->endpoint_event);
+		/* M2582: this fires hundreds of times a second while no gadget driver
+		 * is bound; printing each one starves the console and delays the
+		 * userspace gadget setup that would stop it. */
+		{
+			/* M2582: EP0 gets the same zero-typed events. Print the raw word
+			 * and the core's byte count to separate "core wrote nothing"
+			 * from "driver decoded wrongly". */
+			const u32 *raw = (const u32 *)event;
+
+			{
+				struct dwc3_event_buffer *eb = dwc->ev_buf;
+				const u32 *dma = eb ? (const u32 *)eb->buf : NULL;
+				const u32 *cch = eb ? (const u32 *)eb->cache : NULL;
+
+				dev_err_ratelimited(dwc->dev,
+					"M2582: ep0 evtw[0..7]=%08x %08x %08x %08x %08x %08x %08x %08x\n",
+					raw[0], raw[1], raw[2], raw[3],
+					raw[4], raw[5], raw[6], raw[7]);
+				dev_err_ratelimited(dwc->dev,
+					"unknown endpoint event %d (ep0) raw=%08x evtcount=%08x "
+					"lpos=%u count=%u len=%u dma=%pad dma[0..3]=%08x %08x %08x %08x "
+					"cache[0..3]=%08x %08x %08x %08x\n",
+					event->endpoint_event, *raw,
+					dwc3_readl(dwc->regs, DWC3_GEVNTCOUNT(0)),
+					eb ? eb->lpos : 0, eb ? eb->count : 0,
+					eb ? eb->length : 0, eb ? &eb->dma : NULL,
+					dma ? dma[0] : 0, dma ? dma[1] : 0,
+					dma ? dma[2] : 0, dma ? dma[3] : 0,
+					cch ? cch[0] : 0, cch ? cch[1] : 0,
+					cch ? cch[2] : 0, cch ? cch[3] : 0);
+				dev_err_ratelimited(dwc->dev,
+					"M2582: core-state dctl=%08x dsts=%08x dcfg=%08x gctl=%08x "
+					"devten=%08x dr_mode=%d speed=%d\n",
+					dwc3_readl(dwc->regs, DWC3_DCTL),
+					dwc3_readl(dwc->regs, DWC3_DSTS),
+					dwc3_readl(dwc->regs, DWC3_DCFG),
+					dwc3_readl(dwc->regs, DWC3_GCTL),
+					dwc3_readl(dwc->regs, DWC3_DEVTEN),
+					dwc->dr_mode, dwc->gadget->speed);
+			}
+		}
 		break;
 	}
 }

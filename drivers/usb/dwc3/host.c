@@ -13,55 +13,8 @@
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 
-#include "../host/xhci-port.h"
-#include "../host/xhci-ext-caps.h"
-#include "../host/xhci-caps.h"
 #include "../host/xhci-plat.h"
 #include "core.h"
-
-#define XHCI_HCSPARAMS1		0x4
-#define XHCI_PORTSC_BASE	0x400
-
-/**
- * dwc3_power_off_all_roothub_ports - Power off all Root hub ports
- * @dwc: Pointer to our controller context structure
- */
-static void dwc3_power_off_all_roothub_ports(struct dwc3 *dwc)
-{
-	void __iomem *xhci_regs;
-	u32 op_regs_base;
-	int port_num;
-	u32 offset;
-	u32 reg;
-	int i;
-
-	/* xhci regs are not mapped yet, do it temporarily here */
-	if (dwc->xhci_resources[0].start) {
-		if (dwc->xhci_resources[0].flags & IORESOURCE_MEM_NONPOSTED)
-			xhci_regs = ioremap_np(dwc->xhci_resources[0].start, DWC3_XHCI_REGS_END);
-		else
-			xhci_regs = ioremap(dwc->xhci_resources[0].start, DWC3_XHCI_REGS_END);
-		if (!xhci_regs) {
-			dev_err(dwc->dev, "Failed to ioremap xhci_regs\n");
-			return;
-		}
-
-		op_regs_base = HC_LENGTH(readl(xhci_regs));
-		reg = readl(xhci_regs + XHCI_HCSPARAMS1);
-		port_num = HCS_MAX_PORTS(reg);
-
-		for (i = 1; i <= port_num; i++) {
-			offset = op_regs_base + XHCI_PORTSC_BASE + 0x10 * (i - 1);
-			reg = readl(xhci_regs + offset);
-			reg &= ~PORT_POWER;
-			writel(reg, xhci_regs + offset);
-		}
-
-		iounmap(xhci_regs);
-	} else {
-		dev_err(dwc->dev, "xhci base reg invalid\n");
-	}
-}
 
 static void dwc3_xhci_plat_start(struct usb_hcd *hcd)
 {
@@ -134,12 +87,6 @@ int dwc3_host_init(struct dwc3 *dwc)
 	int			ret, irq;
 	int			prop_idx = 0;
 
-	/*
-	 * Some platforms need to power off all Root hub ports immediately after DWC3 set to host
-	 * mode to avoid VBUS glitch happen when xhci get reset later.
-	 */
-	dwc3_power_off_all_roothub_ports(dwc);
-
 	irq = dwc3_host_get_irq(dwc);
 	if (irq < 0)
 		return irq;
@@ -186,7 +133,7 @@ int dwc3_host_init(struct dwc3 *dwc)
 		props[prop_idx++] = PROPERTY_ENTRY_BOOL("quirk-broken-port-ped");
 
 	props[prop_idx++] = PROPERTY_ENTRY_U16("num-hc-interrupters",
-					       dwc->num_hc_interrupters);
+						dwc->num_hc_interrupters);
 
 	if (prop_idx) {
 		ret = device_create_managed_software_node(&xhci->dev, props, NULL);
@@ -220,7 +167,6 @@ err:
 	platform_device_put(xhci);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(dwc3_host_init);
 
 void dwc3_host_exit(struct dwc3 *dwc)
 {
@@ -231,4 +177,3 @@ void dwc3_host_exit(struct dwc3 *dwc)
 	platform_device_unregister(dwc->xhci);
 	dwc->xhci = NULL;
 }
-EXPORT_SYMBOL_GPL(dwc3_host_exit);

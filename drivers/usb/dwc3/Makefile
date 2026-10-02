@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 # define_trace.h needs to know how to find our header
 CFLAGS_trace.o				:= -I$(src)
+CFLAGS_dwc3-msm-core.o			:= -I$(srctree)/drivers/usb/host
 
 obj-$(CONFIG_USB_DWC3)			+= dwc3.o
 
@@ -30,34 +31,11 @@ ifneq ($(CONFIG_DEBUG_FS),)
 	dwc3-y				+= debugfs.o
 endif
 
-##
-# Platform-specific glue layers go here
-#
-# NOTICE: Make sure your glue layer doesn't depend on anything
-# which is arch-specific and that it compiles on all situations.
-#
-# We want to keep this requirement in order to be able to compile
-# the entire driver (with all its glue layers) on several architectures
-# and make sure it compiles fine. This will also help with allmodconfig
-# and allyesconfig builds.
-##
-
-obj-$(CONFIG_USB_DWC3_AM62)		+= dwc3-am62.o
-obj-$(CONFIG_USB_DWC3_APPLE)		+= dwc3-apple.o
-obj-$(CONFIG_USB_DWC3_OMAP)		+= dwc3-omap.o
-obj-$(CONFIG_USB_DWC3_EXYNOS)		+= dwc3-exynos.o
-obj-$(CONFIG_USB_DWC3_PCI)		+= dwc3-pci.o
-obj-$(CONFIG_USB_DWC3_HAPS)		+= dwc3-haps.o
-obj-$(CONFIG_USB_DWC3_KEYSTONE)		+= dwc3-keystone.o
-obj-$(CONFIG_USB_DWC3_MESON_G12A)	+= dwc3-meson-g12a.o
-obj-$(CONFIG_USB_DWC3_OF_SIMPLE)	+= dwc3-of-simple.o
-obj-$(CONFIG_USB_DWC3_ST)		+= dwc3-st.o
-obj-$(CONFIG_USB_DWC3_QCOM)		+= dwc3-qcom.o
-obj-$(CONFIG_USB_DWC3_QCOM)		+= dwc3-qcom-legacy.o
-obj-$(CONFIG_USB_DWC3_IMX8MP)		+= dwc3-imx8mp.o
-obj-$(CONFIG_USB_DWC3_IMX)		+= dwc3-imx.o
-obj-$(CONFIG_USB_DWC3_XILINX)		+= dwc3-xilinx.o
-obj-$(CONFIG_USB_DWC3_OCTEON)		+= dwc3-octeon.o
-obj-$(CONFIG_USB_DWC3_RTK)		+= dwc3-rtk.o
-obj-$(CONFIG_USB_DWC3_GENERIC_PLAT)	+= dwc3-generic-plat.o
-obj-$(CONFIG_USB_DWC3_GOOGLE)		+= dwc3-google.o
+# M2582 bring-up: the vendor dwc3-msm glue replaces mainline's dwc3-qcom here.
+# It performs the clock/reset/DBM sequence that lets this core's DCTL.CSFTRST
+# actually clear.
+obj-$(CONFIG_USB_DWC3_MSM)	+= dwc3-msm.o
+# debug_ipc.o kept for the IPC log helpers; dwc3-msm-ops.o is the Android
+# kprobe USB-state reporter and depends on CONFIG_ANDROID_USB_CONFIGFS_UEVENT,
+# which mainline does not have. It is not needed for CDC ACM.
+dwc3-msm-y				:= dwc3-msm-core.o debug_ipc.o dwc3-msm-m2582-stubs.o
