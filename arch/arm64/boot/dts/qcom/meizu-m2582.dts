@@ -6,6 +6,7 @@
 #include "meizu-m2582-power.dtsi"
 #include "tuna-display.dtsi"
 #include "tuna-usb.dtsi"
+#include "tuna-i2c.dtsi"
 /*
  * The PMK8550 sits on the SPMI bus declared in tuna.dtsi. This brings in the
  * PMIC node, its SDAM2 (whose restart-reason field the bootloader reads to pick
@@ -221,7 +222,58 @@
 	reg-names = "pon_hlos", "pon_pbs";
 };
 
+/*
+ * Bring the GENI I2C buses up.
+ *
+ * tuna-i2c.dtsi declares six of them (SE0-SE4 and SE6 in qupv3 wrap 1) but
+ * leaves them disabled, since a bus with nothing on it is not free. Enabling
+ * them costs nothing here and gives userspace /dev/i2c-N through I2C_CHARDEV,
+ * which is what makes a bus probeable with i2cdetect.
+ *
+ * No pinctrl state is attached yet, so the SDA/SCL pads are still in their reset
+ * configuration and traffic is not expected to work. The point of this step is
+ * to confirm the controllers themselves probe; the pad configuration follows.
+ */
+/*
+ * The GENI I2C buses stay disabled.
+ *
+ * Enabling them panics the board at 0.4 s, every boot, before userspace:
+ *
+ *     geni_i2c a80000.i2c: Bus frequency not specified, default to 100kHz.
+ *     Internal error: synchronous external abort: 0000000096000010
+ *     pc : geni_i2c_probe+0x2b4/0x534
+ *
+ * A synchronous external abort on a register access means the SE window is not
+ * reachable at all, so the qupv3_1 wrapper needs something we have not given it.
+ * Note that uart7, the only other block in that wrapper, is disabled and has
+ * therefore never proved the wrapper works. The nodes in tuna-i2c.dtsi stay for
+ * whoever picks this up; what they need is to be worked out first -- upstream's
+ * geniqup nodes carry more than the two AHB clocks ours has -- rather than
+ * guessed at with a probe that takes the whole board down.
+ */
+
+/*
+ * Bring up one GENI I2C bus: SE0 at 0xa80000, not SE6.
+ *
+ * SE6 was the obvious pick -- the factory tree puts a WCD939x codec on SE3
+ * and leaves SE6 free -- but SE6's register window does not exist as far as
+ * the application processor is concerned. A single 4-byte read of 0xa98000
+ * through /dev/mem returns BUS ERROR, so the kernel's first register access
+ * after ioremap aborts with a synchronous external abort before any clock,
+ * pinctrl or interconnect code runs. Five earlier attempts blamed the clock
+ * numbers, the pin numbers, the interconnects and a closed GCC block; none of
+ * them could have worked, because the window itself never answers.
+ *
+ * SE0 is reachable (0xa80000 reads 0x00000009) and its pads are on gpio52/53.
+ * SE1 and SE6 are the only dead windows in wrap 1 -- measured, not guessed.
+ */
+&i2c0 { status = "okay"; };
+
+/* SE6 stays disabled: enabling it panics the board, see above. */
+&i2c6 { status = "disabled"; };
+
 /* Ordinary USB cable diagnostics: keep the unconnected UART disabled. */
+
 &uart7 { status = "disabled"; };
 &ufsphy_mem {
 	vdda-phy-supply = <&vreg_ldof1>;
@@ -235,4 +287,18 @@
 	vcc-max-microamp = <1200000>;
 	vccq-max-microamp = <1200000>;
 	status = "okay";
+};
+
+/*
+ * Let userspace set the RTC.
+ *
+ * rtc-pm8xxx refuses RTC_SET_TIME unless the node says so, and the failure is
+ * opaque: hwclock reports "ioctl(RTC_SET_TIME) to /dev/rtc0 to set the time
+ * failed: No such device", which reads like a missing device rather than a
+ * permission flag. Measured on the board: rtc0 registers and RTC_HCTOSYS pulls
+ * the system clock from it, but the clock itself sits at 1970-11-29 until this
+ * is set.
+ */
+&pmk8550_rtc {
+	allow-set-time;
 };

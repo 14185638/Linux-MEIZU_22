@@ -1,0 +1,351 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Meizu 22 (M2582) -- the I2C instances inside qupv3 wrap 1.
+ *
+ * tuna.dtsi already declares qupv3_1 at 0xac0000 and one serial port inside it
+ * (uart7 at 0xa9c000, which is SE7). This adds the I2C controllers that share
+ * that wrapper, so the board has a usable I2C bus.
+ *
+ * Everything below comes from the factory device tree, which names the same
+ * blocks with a different compatible: it says "qcom,i2c-geni" where mainline
+ * says "qcom,geni-i2c", and its clock is named "se-clk" where mainline wants
+ * "se". The addresses and interrupts are taken verbatim:
+ *
+ *     SE0  0xa80000  GIC SPI 353   GCC_QUPV3_WRAP1_S0_CLK   gpio52/53
+ *     SE1  0xa84000  GIC SPI 354   GCC_QUPV3_WRAP1_S1_CLK   gpio4/5
+ *     SE2  0xa88000  GIC SPI 355   GCC_QUPV3_WRAP1_S2_CLK   gpio8/9
+ *     SE3  0xa8c000  GIC SPI 356   GCC_QUPV3_WRAP1_S3_CLK   gpio60/61
+ *     SE4  0xa90000  GIC SPI 357   GCC_QUPV3_WRAP1_S4_CLK   gpio16/17
+ *     SE6  0xa98000  GIC SPI 363   GCC_QUPV3_WRAP1_S6_CLK   gpio24/25  <- DEAD
+ *     SE7  0xa9c000  GIC SPI 579   GCC_QUPV3_WRAP1_S7_CLK   (uart7, already here)
+ *
+ * Only i2c0 (SE0) is enabled, and the choice is not arbitrary -- see the long
+ * note on that node. Two of the seven instances in this wrapper do not exist as
+ * far as the application processor is concerned, and SE6, the one this file
+ * first used, is one of them. The pin columns above are mainline's numbering
+ * from pinctrl-tuna.c, which does not match the factory tree's.
+ *
+ * The interrupts are worth noting: they are not consecutive. SE6 is 363, not
+ * 359, so they were read out one at a time rather than computed from the first.
+ *
+ * SE3 is the only instance the factory kernel actually enables, for the WCD939x
+ * audio codec; it is left disabled here.
+ */
+
+&qupv3_1 {
+	i2c0: i2c@a80000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00a80000 0 0x4000>;
+		interrupts = <GIC_SPI 353 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * SDA/SCL on gpio52/gpio53. This is the bus to use, and the reason
+		 * is worth writing down: SE6 at 0xa98000, the instance this file
+		 * originally enabled, is NOT reachable from the application
+		 * processor at all. Reading it from userspace through /dev/mem
+		 * gives a BUS ERROR (SIGBUS) on the very first access, so the
+		 * driver's first register read after ioremap aborts the kernel --
+		 * with a synchronous external abort, before any clock, pinctrl or
+		 * interconnect code has run. Nothing in the device tree can fix a
+		 * window that the bus does not answer.
+		 *
+		 * The full map of qupv3 wrap 1, measured one 4-byte read per
+		 * address through /dev/mem (O_RDONLY, one child process each):
+		 *
+		 *     SE0 0xa80000  ok  (0x00000009)   <- this node
+		 *     SE1 0xa84000  BUS ERROR
+		 *     SE2 0xa88000  ok  (0x00000009)
+		 *     SE3 0xa8c000  ok  (0x00000009)   factory tree uses this one
+		 *     SE4 0xa90000  ok  (0x00000009)
+		 *     SE6 0xa98000  BUS ERROR          what we had enabled
+		 *     SE7 0xa9c000  ok  (0x0000000a)   uart7
+		 *
+		 * SE1 and SE6 are simply absent from the AP's address map -- most
+		 * likely the secure world's own UART and I2C. The factory device
+		 * tree agrees that SE6 is not a bus this board uses: it leaves
+		 * i2c@a98000 disabled and enables only se3 (the WCD939x codec).
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup_i2c0_sda>, <&qup_i2c0_scl>;
+		/*
+		 * Two clocks, and the second one is the whole reason this file first
+		 * took the board down. qcom-geni-se.c asks for the SE clock with
+		 * devm_clk_get() and for a "core" clock with devm_clk_get_optional(),
+		 * then enables both before touching any register. With "core" absent
+		 * the pointer stays NULL, clk_prepare_enable(NULL) quietly succeeds,
+		 * and the QUP core never gets its clock -- so the first register read
+		 * after that, geni_se_read_proto() at offset 0x68, raises a
+		 * synchronous external abort and panics the board at 0.35 s.
+		 *
+		 * The core clock exists and is votable: gcc_qupv3_wrap1_core_clk,
+		 * enable_reg 0x52008 bit 19. Naming it here is all that was missing.
+		 */
+		clocks = <&gcc GCC_QUPV3_WRAP1_S0_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		clock-names = "se", "core";
+		/*
+		 * No interconnect votes. With them the probe aborted on the first
+		 * register read after geni_se_resources_on(), which is exactly what a
+		 * mis-programmed NOC path looks like; without them the same read is
+		 * fine from userspace. They come back once the right path is known --
+		 * geni_icc_get() treats a missing one as optional, so leaving them out
+		 * is legal and keeps the bus usable, just without a bandwidth vote.
+		 */
+		status = "disabled";
+	};
+
+	i2c1: i2c@a84000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00a84000 0 0x4000>;
+		interrupts = <GIC_SPI 354 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * Two clocks, and the second one is the whole reason this file first
+		 * took the board down. qcom-geni-se.c asks for the SE clock with
+		 * devm_clk_get() and for a "core" clock with devm_clk_get_optional(),
+		 * then enables both before touching any register. With "core" absent
+		 * the pointer stays NULL, clk_prepare_enable(NULL) quietly succeeds,
+		 * and the QUP core never gets its clock -- so the first register read
+		 * after that, geni_se_read_proto() at offset 0x68, raises a
+		 * synchronous external abort and panics the board at 0.35 s.
+		 *
+		 * The core clock exists and is votable: gcc_qupv3_wrap1_core_clk,
+		 * enable_reg 0x52008 bit 19. Naming it here is all that was missing.
+		 */
+		clocks = <&gcc GCC_QUPV3_WRAP1_S1_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		clock-names = "se", "core";
+		/*
+		 * No interconnect votes. With them the probe aborted on the first
+		 * register read after geni_se_resources_on(), which is exactly what a
+		 * mis-programmed NOC path looks like; without them the same read is
+		 * fine from userspace. They come back once the right path is known --
+		 * geni_icc_get() treats a missing one as optional, so leaving them out
+		 * is legal and keeps the bus usable, just without a bandwidth vote.
+		 */
+		status = "disabled";
+	};
+
+	i2c2: i2c@a88000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00a88000 0 0x4000>;
+		interrupts = <GIC_SPI 355 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * Two clocks, and the second one is the whole reason this file first
+		 * took the board down. qcom-geni-se.c asks for the SE clock with
+		 * devm_clk_get() and for a "core" clock with devm_clk_get_optional(),
+		 * then enables both before touching any register. With "core" absent
+		 * the pointer stays NULL, clk_prepare_enable(NULL) quietly succeeds,
+		 * and the QUP core never gets its clock -- so the first register read
+		 * after that, geni_se_read_proto() at offset 0x68, raises a
+		 * synchronous external abort and panics the board at 0.35 s.
+		 *
+		 * The core clock exists and is votable: gcc_qupv3_wrap1_core_clk,
+		 * enable_reg 0x52008 bit 19. Naming it here is all that was missing.
+		 */
+		clocks = <&gcc GCC_QUPV3_WRAP1_S2_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		clock-names = "se", "core";
+		/*
+		 * No interconnect votes. With them the probe aborted on the first
+		 * register read after geni_se_resources_on(), which is exactly what a
+		 * mis-programmed NOC path looks like; without them the same read is
+		 * fine from userspace. They come back once the right path is known --
+		 * geni_icc_get() treats a missing one as optional, so leaving them out
+		 * is legal and keeps the bus usable, just without a bandwidth vote.
+		 */
+		status = "disabled";
+	};
+
+	i2c3: i2c@a8c000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00a8c000 0 0x4000>;
+		interrupts = <GIC_SPI 356 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * Two clocks, and the second one is the whole reason this file first
+		 * took the board down. qcom-geni-se.c asks for the SE clock with
+		 * devm_clk_get() and for a "core" clock with devm_clk_get_optional(),
+		 * then enables both before touching any register. With "core" absent
+		 * the pointer stays NULL, clk_prepare_enable(NULL) quietly succeeds,
+		 * and the QUP core never gets its clock -- so the first register read
+		 * after that, geni_se_read_proto() at offset 0x68, raises a
+		 * synchronous external abort and panics the board at 0.35 s.
+		 *
+		 * The core clock exists and is votable: gcc_qupv3_wrap1_core_clk,
+		 * enable_reg 0x52008 bit 19. Naming it here is all that was missing.
+		 */
+		clocks = <&gcc GCC_QUPV3_WRAP1_S3_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		clock-names = "se", "core";
+		/*
+		 * No interconnect votes. With them the probe aborted on the first
+		 * register read after geni_se_resources_on(), which is exactly what a
+		 * mis-programmed NOC path looks like; without them the same read is
+		 * fine from userspace. They come back once the right path is known --
+		 * geni_icc_get() treats a missing one as optional, so leaving them out
+		 * is legal and keeps the bus usable, just without a bandwidth vote.
+		 */
+		status = "disabled";
+	};
+
+	i2c4: i2c@a90000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00a90000 0 0x4000>;
+		interrupts = <GIC_SPI 357 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * Two clocks, and the second one is the whole reason this file first
+		 * took the board down. qcom-geni-se.c asks for the SE clock with
+		 * devm_clk_get() and for a "core" clock with devm_clk_get_optional(),
+		 * then enables both before touching any register. With "core" absent
+		 * the pointer stays NULL, clk_prepare_enable(NULL) quietly succeeds,
+		 * and the QUP core never gets its clock -- so the first register read
+		 * after that, geni_se_read_proto() at offset 0x68, raises a
+		 * synchronous external abort and panics the board at 0.35 s.
+		 *
+		 * The core clock exists and is votable: gcc_qupv3_wrap1_core_clk,
+		 * enable_reg 0x52008 bit 19. Naming it here is all that was missing.
+		 */
+		clocks = <&gcc GCC_QUPV3_WRAP1_S4_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		clock-names = "se", "core";
+		/*
+		 * No interconnect votes. With them the probe aborted on the first
+		 * register read after geni_se_resources_on(), which is exactly what a
+		 * mis-programmed NOC path looks like; without them the same read is
+		 * fine from userspace. They come back once the right path is known --
+		 * geni_icc_get() treats a missing one as optional, so leaving them out
+		 * is legal and keeps the bus usable, just without a bandwidth vote.
+		 */
+		status = "disabled";
+	};
+
+	i2c6: i2c@a98000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00a98000 0 0x4000>;
+		interrupts = <GIC_SPI 363 IRQ_TYPE_LEVEL_HIGH>;
+		/*
+		 * geni_se_resources_on() ends with
+		 * pinctrl_pm_select_default_state(), so without these the SDA/SCL pads
+		 * stay in whatever the bootloader left them in and no traffic is
+		 * possible even if the controller probes. The functions exist in
+		 * pinctrl-tuna.c as msm_mux_qup1_se6_l0 (gpio24) and _l1 (gpio25).
+		 * The factory tree says gpio40/gpio41 for the same function, which is
+		 * how we learned that its pin numbers, like its clock numbers, are its
+		 * own and do not line up with the mainline binding.
+		 */
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup_i2c6_sda>, <&qup_i2c6_scl>;
+		/*
+		 * Two clocks, and the second one is the whole reason this file first
+		 * took the board down. qcom-geni-se.c asks for the SE clock with
+		 * devm_clk_get() and for a "core" clock with devm_clk_get_optional(),
+		 * then enables both before touching any register. With "core" absent
+		 * the pointer stays NULL, clk_prepare_enable(NULL) quietly succeeds,
+		 * and the QUP core never gets its clock -- so the first register read
+		 * after that, geni_se_read_proto() at offset 0x68, raises a
+		 * synchronous external abort and panics the board at 0.35 s.
+		 *
+		 * The core clock exists and is votable: gcc_qupv3_wrap1_core_clk,
+		 * enable_reg 0x52008 bit 19. Naming it here is all that was missing.
+		 */
+		clocks = <&gcc GCC_QUPV3_WRAP1_S6_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		clock-names = "se", "core";
+		/*
+		 * No interconnect votes. With them the probe aborted on the first
+		 * register read after geni_se_resources_on(), which is exactly what a
+		 * mis-programmed NOC path looks like; without them the same read is
+		 * fine from userspace. They come back once the right path is known --
+		 * geni_icc_get() treats a missing one as optional, so leaving them out
+		 * is legal and keeps the bus usable, just without a bandwidth vote.
+		 */
+		status = "disabled";
+	};
+};
+
+/*
+ * The two dead windows, and how the rest of the wrapper was cleared.
+ *
+ * This block replaces five rounds of wrong theories. The short version: SE6 at
+ * 0xa98000, the instance this file originally enabled, cannot be read from the
+ * application processor at all, so the driver's first register access after
+ * ioremap raised a synchronous external abort long before any clock, pinctrl or
+ * interconnect code could matter. Switching to SE0 fixed it on the first try.
+ *
+ * How to tell a dead window from a live one, without panicking the board:
+ * read it from userspace through /dev/mem. That mapping is Normal memory, not
+ * Device, so a window the bus does not answer raises SIGBUS and kills only the
+ * reading process -- the kernel is untouched. One address per child process,
+ * O_RDONLY (O_RDWR on the same page hangs the process instead of failing):
+ *
+ *     python3 -c "import mmap,os,struct,sys; *     phys=int(sys.argv[1],16); base=phys&~0xfff; *     fd=os.open('/dev/mem',os.O_RDONLY|os.O_SYNC); *     m=mmap.mmap(fd,0x1000,mmap.MAP_SHARED,mmap.PROT_READ,offset=base); *     print('0x%08x'%struct.unpack('<I',m[phys-base:phys-base+4])[0])" 0xa80000
+ *
+ * Measured that way, all of qupv3 wrap 1:
+ *
+ *     SE0 0xa80000  0x00000009   live
+ *     SE1 0xa84000  SIGBUS       DEAD
+ *     SE2 0xa88000  0x00000009   live
+ *     SE3 0xa8c000  0x00000009   live  (the factory kernel's bus, WCD939x)
+ *     SE4 0xa90000  0x00000009   live
+ *     SE6 0xa98000  SIGBUS       DEAD  (what this file used to enable)
+ *     SE7 0xa9c000  0x0000000a   live  (uart7)
+ *
+ * SE1 and SE6 are absent from the AP's address map, most likely because they
+ * belong to the secure world. The factory device tree agrees that this board
+ * does not use SE6 as an I2C bus: it leaves i2c@a98000 disabled and enables
+ * only se3, for the codec.
+ *
+ * Everything else that was suspected and is now known to be irrelevant: the
+ * "core" clock, the interconnect votes, the factory's clock and pin numbering,
+ * and a supposedly closed GCC block. The GCC QUP registers are in fact readable
+ * (0x162000 reads, and clk_summary shows the kernel enabled those clocks), and
+ * the pin numbering was right all along -- gpio24/25 really are SE6, which is
+ * simply the wrong bus to be on.
+ */
+&tlmm {
+	/*
+	 * SE0's pads (see the note on i2c0 above for why this is the bus to use).
+	 * pinctrl-tuna.c has qup1_se0_l0 on gpio52 and qup1_se0_l1 on gpio53.
+	 */
+	qup_i2c0_sda: qup-i2c0-sda-state {
+		pins = "gpio52";
+		function = "qup1_se0_l0";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup_i2c0_scl: qup-i2c0-scl-state {
+		pins = "gpio53";
+		function = "qup1_se0_l1";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup_i2c6_sda: qup-i2c6-sda-state {
+		pins = "gpio24";
+		function = "qup1_se6_l0";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup_i2c6_scl: qup-i2c6-scl-state {
+		pins = "gpio25";
+		function = "qup1_se6_l1";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+};
+
+/*
+ * Pin numbering, kept for reference because it is easy to get wrong twice.
+ *
+ * The factory tree puts qup1_se6_l0/l1 on gpio40/gpio41, while pinctrl-tuna.c
+ * has them on gpio24/gpio25 and says so out loud when asked for the wrong one:
+ *
+ *     tuna-pinctrl f000000.pinctrl: invalid group "gpio40" for function "qup1_se6_l0"
+ *
+ * The full map in mainline's numbering is SE0 52/53, SE1 4/5, SE2 8/9,
+ * SE3 60/61, SE4 16/17, SE5 12/13, SE6 24/25, SE7 28/29 -- the factory's SE0 is
+ * on 28/29, which in our numbering is SE7, so the two tables are offset.
+ *
+ * The factory tree's clock IDs are its own as well: it writes <&gcc 0x58> for
+ * SE6's SE clock, but 0x58 is 88, which in qcom,gcc-tuna.h is
+ * GCC_QUPV3_WRAP2_IBI_CTRL_3_CLK, and its m-ahb/s-ahb values land on
+ * GCC_SDCC2_APPS_CLK_SRC and GCC_UFS_PHY_AHB_CLK. Use our own header's names.
+ *
+ * Both of those matter, but neither was the cause of the abort -- correcting
+ * them changed nothing, because the window itself was dead. See the note above
+ * on the two dead windows.
+ */
