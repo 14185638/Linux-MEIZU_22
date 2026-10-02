@@ -3105,6 +3105,33 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	dwc->gadget_driver	= driver;
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
+	/*
+	 * M2582: tell the UDC that VBUS is present.
+	 *
+	 * usb_udc_connect_control() only calls usb_gadget_connect() -- and only
+	 * that reaches dwc3_gadget_pullup(), the one place D+ gets asserted --
+	 * when udc->vbus is true. Nothing in this port ever sets it:
+	 *
+	 *   the mainline core path is otg_set_vbus(dwc->usb2_phy->otg, true),
+	 *   dwc->usb2_phy is the *legacy* usb_phy, and phy-snps-eusb2.c registers
+	 *   only the generic phy API, so that pointer is NULL.
+	 *
+	 * The vendor does not have this problem because its device tree gives the
+	 * controller an extcon, which reports VBUS from the PMIC:
+	 *
+	 *     dwc3 { extcon = <&...>; usb-role-switch; dr_mode = "otg"; ... }
+	 *
+	 * The symptom matches exactly. The on-screen log shows the configfs bind
+	 * succeeding ("late bind UDC rc=0") and then no "M2582: pullup" line at
+	 * all -- not a delayed one, not a failed one, none -- and the UDC reports
+	 * "not attached" for the rest of the boot, while the host only enumerates
+	 * about 40 s later through some other path.
+	 *
+	 * Setting it here is just in time: udc_bind_to_driver() calls udc_start()
+	 * (this function) and then usb_udc_connect_control() immediately after.
+	 */
+	usb_udc_vbus_handler(dwc->gadget, true);
+
 	if (dwc->sys_wakeup)
 		device_wakeup_enable(dwc->sysdev);
 

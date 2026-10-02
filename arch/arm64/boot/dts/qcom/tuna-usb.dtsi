@@ -594,7 +594,33 @@
 			snps,is-utmi-l1-suspend;
 			snps,dis-u1-entry-quirk;
 			snps,dis-u2-entry-quirk;
+			/*
+			 * M2582: do not let the core suspend the SuperSpeed PHY.
+			 *
+			 * Measured with /dev/mem snapshots of the DWC3 registers taken at
+			 * 13 s, 43 s and 113 s:
+			 *
+			 *   t=13 s   udc=not attached   GUSB3PIPECTL0 030e1002
+			 *   t=43 s   udc=not attached   GUSB3PIPECTL0 030e1002
+			 *   t=113 s  udc=configured     GUSB3PIPECTL0 030c1002
+			 *
+			 * The only bit that changes when the link finally comes up is
+			 * bit 17, GUSB3PIPECTL.SUSPHY: the SuperSpeed PHY sits suspended
+			 * and the core never sees a connect, so the gadget binds at 8 s
+			 * and then nothing happens for another forty-odd seconds until
+			 * something clears the bit.
+			 *
+			 * dwc3_enable_susphy() only sets SUSPHY when this quirk is absent
+			 * (core.c: "if (enable && !dwc->dis_u3_susphy_quirk)"). The vendor
+			 * tree carries snps,dis_u2_susphy_quirk for the high-speed PHY but
+			 * its runtime register reads 030c1002 with SUSPHY clear, so it
+			 * never leaves the SS PHY suspended either.
+			 *
+			 * Not suspending it also gives the SuperSpeed link a chance, which
+			 * is the other thing this board has never managed.
+			 */
 			snps,dis_u2_susphy_quirk;
+			snps,dis_u3_susphy_quirk;
 			snps,ssp-u3-u0-quirk;
 			dma-coherent;
 		};
