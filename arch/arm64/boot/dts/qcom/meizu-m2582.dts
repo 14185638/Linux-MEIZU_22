@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /dts-v1/;
+#include <dt-bindings/input/linux-event-codes.h>
 #include "tuna.dtsi"
 #include "meizu-m2582-memory.dtsi"
 #include "meizu-m2582-power.dtsi"
@@ -15,6 +16,30 @@
  * so this deliberately stays clear of the RPMh path that hangs this board.
  */
 #include "pmk8550.dtsi"
+/*
+ * The rest of the PMIC complex that this board actually carries.
+ *
+ * The factory device tree puts thirteen PMICs on the SPMI bus. Only two were
+ * reachable before: the PMK8550 at USID 0 (which carries the SDAM the bootloader
+ * reads for its restart reason) and the PMIH010X at USID 7 (which carries the
+ * eUSB2 repeater). This brings in four more -- PM8550VE at USIDs 3, 5 and 6 and
+ * PM8550VS at USID 9 -- which is what sm8750-pmics.dtsi already describes for
+ * this SoC generation.
+ *
+ * Deliberately included for what it does NOT contain: there are no regulators
+ * here. Declaring a rail is the part that can reset this board, because the RPMh
+ * path stalls the RSC and the bootloader's own configuration is what currently
+ * keeps everything powered; see meizu-m2582-power.dtsi. All this adds is the
+ * PMICs themselves, their PMIC GPIO blocks, and the thermal zones and trip
+ * points that come with them -- enough to talk to the hardware and to read its
+ * temperature, with nothing that can take a rail away.
+ *
+ * The remaining PMICs from the factory list (PMXR2230 at USID 1, PM8550VS at
+ * 2 and 4, PM8550VE at 8, PMR735D at 10, PM8010 at 12 and 13) are not here yet:
+ * upstream has no binding for the PMXR2230, and the rest want their regulators
+ * declared alongside them to be worth much.
+ */
+#include "sm8750-pmics.dtsi"
 
 / {
 	model = "Meizu 22 (M2582) — experimental Linux bring-up";
@@ -67,6 +92,133 @@
 	reboot-mode {
 		mode-normal = <0x7f>;
 	};
+};
+
+/*
+ * The power and volume buttons.
+ *
+ * pmk8550.dtsi declares both of the PMK8550's PON inputs but leaves them
+ * disabled, because not every board wires them to anything. This one does, and
+ * they are the only input devices the board has: with them enabled
+ * /sys/class/input stops being empty and the power button works as a real key
+ * rather than resetting the board in hardware.
+ *
+ * pwrkey is the power button (KEY_POWER). resin is the volume-down line. Both
+ * deliver events; both were confirmed with evtest.
+ */
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin {
+	status = "okay";
+	/*
+	 * pmk8550.dtsi leaves the key code unset, so the driver's default is used
+	 * and volume-down reports KEY_POWER, exactly like the power button. The
+	 * factory tree gives it 114 (KEY_VOLUMEDOWN); measured on the board, the
+	 * key does deliver events, it just delivered the wrong code.
+	 */
+	linux,code = <KEY_VOLUMEDOWN>;
+};
+
+/*
+ * The volume-up button, and with it the PMXR2230.
+ *
+ * The factory device tree splits the buttons across two places. The power button
+ * and volume-down are the PMK8550's PON inputs (pwrkey and resin, enabled
+ * above). Volume-up is not on the PON at all: it hangs off GPIO 6 of the
+ * PMXR2230, the PMIC at SPMI USID 1, active low with a pull-up.
+ *
+ * The PMXR2230 is the one part on this board that upstream has no binding for,
+ * so its node is written out here. The GPIO controller itself needs nothing
+ * new: pinctrl-spmi-gpio.c already lists "qcom,pmxr2230-gpio" with twelve
+ * GPIOs. It is also the rail the two USB PHYs are fed from (ldob3), so having
+ * it on the bus is worth something beyond the button.
+ */
+&spmi_bus {
+	pmxr2230: pmic@1 {
+		compatible = "qcom,pmxr2230", "qcom,spmi-pmic";
+		reg = <0x1 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmxr2230_gpios: gpio@8800 {
+			compatible = "qcom,pmxr2230-gpio", "qcom,spmi-gpio";
+			reg = <0x8800>;
+			gpio-controller;
+			gpio-ranges = <&pmxr2230_gpios 0 0 12>;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+	};
+};
+
+&pmxr2230_gpios {
+	/*
+	 * Measured on the board: `in high normal vin-1 pull-up 30uA`, which is
+	 * exactly what the button needs -- idle high, pulled low when pressed,
+	 * matching GPIO_ACTIVE_LOW below.
+	 *
+	 * The factory tree also sets power-source = <1> on this pad. It is left
+	 * out: the level reads correctly on the default supply, and adding it
+	 * changed nothing measurable.
+	 */
+	key_vol_up_default: key-vol-up-default-state {
+		pins = "gpio6";
+		function = "normal";
+		input-enable;
+		bias-pull-up;
+	};
+};
+
+/ {
+	gpio-keys {
+		compatible = "gpio-keys";
+		label = "gpio-keys";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&key_vol_up_default>;
+
+		vol-up {
+			label = "volume_up";
+			gpios = <&pmxr2230_gpios 6 GPIO_ACTIVE_LOW>;
+			/*
+			 * gpio-keys reads the level through gpiod and would take the
+			 * interrupt from gpiod_to_irq() by default. Naming it here
+			 * pins it to the pad's own interrupt rather than to whatever
+			 * translation that call performs; on this PMIC GPIO the two
+			 * turn out to be the same line ("spmi-gpio", irq 141), so
+			 * this is belt and braces rather than a fix.
+			 */
+			interrupts-extended = <&pmxr2230_gpios 6 IRQ_TYPE_EDGE_FALLING>;
+			linux,input-type = <EV_KEY>;
+			linux,code = <KEY_VOLUMEUP>;
+			gpio-key,wakeup;
+			debounce-interval = <15>;
+			linux,can-disable;
+		};
+	};
+};
+
+/*
+ * The PON block, named the way this board names it.
+ *
+ * The factory tree calls the PON "qcom,pm8998-pon" with reg-names
+ * "pon_hlos"/"pon_pbs", while upstream's pmk8550.dtsi calls it
+ * "qcom,pmk8350-pon" with "hlos"/"pbs". The driver resolves its register
+ * windows by reg-name, so the two spellings are not interchangeable; this
+ * follows the factory, which is what the hardware on this board was described
+ * by. The keys work with it -- pwrkey and resin both report events -- though
+ * they also worked before this change was made, so it is alignment with the
+ * vendor description rather than a proven fix.
+ *
+ * Only these properties are overridden; the children (pwrkey, resin) stay as
+ * pmk8550.dtsi declares them.
+ */
+&pmk8550_pon {
+	compatible = "qcom,pm8998-pon";
+	reg-names = "pon_hlos", "pon_pbs";
 };
 
 /* Ordinary USB cable diagnostics: keep the unconnected UART disabled. */
