@@ -1,0 +1,611 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* USB peripheral (gadget) path, for early USB CDC ACM diagnostics. */
+#include <dt-bindings/phy/phy-qcom-qmp.h>
+&soc {
+	spmi_bus: spmi@c400000 {
+		compatible = "qcom,spmi-pmic-arb";
+		reg = <0 0x0c400000 0 0x3000>, <0 0x0c500000 0 0x400000>,
+		      <0 0x0c440000 0 0x80000>, <0 0x0c4c0000 0 0x10000>,
+		      <0 0x0c42d000 0 0x4000>;
+		reg-names = "core", "chnls", "obsrvr", "intr", "cnfg";
+		interrupts-extended = <&pdc 1 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "periph_irq";
+		qcom,ee = <0>;
+		qcom,channel = <0>;
+		qcom,bus-id = <0>;
+		interrupt-controller;
+		#interrupt-cells = <4>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+		pmih010x: pmic@7 {
+			compatible = "qcom,spmi-pmic";
+			reg = <7 0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			usb_repeater: phy@fd00 {
+				compatible = "qcom,pmih010x-eusb2-repeater";
+				reg = <0xfd00>;
+				#phy-cells = <0>;
+				vdd18-supply = <&vreg_ldob7>;
+				vdd3-supply = <&vreg_ldob17>;
+			};
+		};
+	};
+
+	/*
+	 * M2582: 19.2 MHz -- this is the value the working build (1002-0955) was
+	 * flashed with, and USB CDC ACM enumerates with it, so it stays.
+	 *
+	 * Note for the future: the vendor driver's comment says "TUNA also gates
+	 * its 38.4 MHz reference through TCSR" and its init branches on
+	 * clk_get_rate(ref_clk) (19.2 -> 0x5c=0x90, 38.4 -> 0x5c=0xc8, with the
+	 * PLL feedback divider chosen the same way by qcom_eusb2_ref_clk_init()).
+	 * Changing this to 38400000 was prepared but never built or flashed, so
+	 * whether 38.4 MHz also works -- or works better -- remains untested.
+	 */
+	tcsr_usb2_clkref: tcsr-usb2-clkref {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <38400000>;
+	};
+
+	/*
+	 * USB3 reference gate. The real one lives in the TCSR block, which the
+	 * non-secure kernel must not touch; ABL has already enabled it. The DWC3
+	 * node lists it as "xo", matching the working sm8650 node.
+	 */
+	tcsr_usb3_clkref: tcsr-usb3-clkref {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <19200000>;
+	};
+
+	/*
+	 * Vendor tuna (from OnePlus's qcom/opensource/devicetree/tuna-usb.dtsi):
+	 * SM8750 uses the M31 eUSB2 PHY, but tuna uses the older Synopsis eUSB2
+	 * PHY at reg window 0x154. The previous compatible here,
+	 * "qcom,tuna-snps-eusb2-phy", is not in any driver's match table -- not
+	 * even in the snps-eusb2-phy binding enum -- so nothing ever bound to
+	 * 88e3000.phy, the DWC3 above it deferred forever with -EPROBE_DEFER, and
+	 * its UTMI clock never existed. Note there is no TUNA entry in the enum:
+	 * the driver's documented fallback for these parts is
+	 * "qcom,sm8550-snps-eusb2-phy", which is what phy-qcom-snps-femto-v2
+	 * actually matches.
+	 */
+	usb_hsphy: phy@88e3000 {
+		/*
+		 * M2582: use the tuna drvdata, not the sm8550 one.
+		 *
+		 * phy-snps-eusb2.c carries a dedicated entry for this part
+		 * (qcom,tuna-snps-eusb2-phy -> tuna_snps_eusb2_phy) whose clock list
+		 * is { "ref", "ref_gate" } and whose init path is the QCOM one that
+		 * programs the PLL, the bias and the HS parameters. We were binding
+		 * the sm8550 entry with a single "ref" clock, so the reference gate
+		 * the driver expects to manage was never represented and the part was
+		 * brought up through the generic path -- which shows up as the HS link
+		 * flapping, the host retrying SET_ADDRESS and error -71.
+		 */
+		compatible = "qcom,tuna-snps-eusb2-phy";
+		/*
+		 * M2582: all three regions, exactly as the factory has them. The
+		 * driver only used the first, but the vendor's own init calls
+		 * msm_eusb2_phy_power() *before* the register sequence and that
+		 * function writes eud_enable_reg -- the second region. Without it
+		 * mapped the PHY's APB access window never opens, which matches what
+		 * we measure: writing APB_ACCESS_CMD (0x130) reads back 0, i.e. the
+		 * write is discarded, while writes to other registers appear to land.
+		 */
+		reg = <0 0x088e3000 0 0x154>,
+		      <0 0x088e2000 0 0x04>,
+		      <0 0x0c278000 0 0x04>;
+		reg-names = "eusb2_phy_base", "eud_enable_reg", "eud_detect_reg";
+		/*
+		 * M2582: fixed-clock stubs, and that is deliberate.
+		 *
+		 * Pointing these at the real providers (<&rpmhcc RPMH_CXO_CLK> and
+		 * <&tcsrcc TCSR_USB2_CLKREF_EN>) looks more correct on paper but does
+		 * not work: the tcsrcc clock provider does not come up, so
+		 * devm_clk_get() in this driver never resolves and the PHY's probe
+		 * defers forever (-517 on every retry). With no eUSB2 PHY driver the
+		 * DWC3 cannot bring USB up at all and the board vanishes from the host
+		 * -- measured as "88e3000.phy: no-driver" in the report and a
+		 * completely silent USB bus.
+		 *
+		 * With these stubs the PHY probes fine ("driver=snps-eusb2-hsphy") and
+		 * USB CDC ACM has enumerated at least once, so this stays.
+		 */
+		clocks = <&tcsr_usb2_clkref>, <&tcsr_usb2_clkref>;
+		clock-names = "ref", "ref_gate";
+		/*
+		 * M2582: THE actual bug. PMXR2230 L7 is the USB PHYs' I/O rail and it
+		 * is 1.8 V -- the vendor's running system shows exactly that:
+		 *
+		 *     pmxr2230_l7 | enabled | 1800000 uV
+		 *     pmxr2230_l4 | enabled | 1200000 uV
+		 *
+		 * We had vdd on ldob3, which is 880000-950000 uV, i.e. under half the
+		 * required voltage. An under-volted PHY I/O block cannot hold its
+		 * register configuration, which is precisely what both PHYs do: the
+		 * eUSB2 PLL never locks (0x14 stays 0 through 500 ms of polling) and
+		 * all 165 entries of the SS PHY table read back as the PHY's defaults.
+		 *
+		 * ldob7 is already defined in meizu-m2582-power.dtsi as an
+		 * always-on/boot-on 1800000 uV rail, so this needs no new RPMh resource
+		 * (adding one is what hung the board twice) and no enable vote.
+		 */
+		vdd-supply = <&vreg_ldob7>;
+		vdda12-supply = <&vreg_ldob4>;
+		/*
+		 * M2582: the factory node has a third rail here, vdd_refgen, which
+		 * feeds the eUSB2 reference generator (PMXR2230 L2B, 0.88 V).
+		 * Mainline's driver only knows vdd/vdda12, so this rail was never
+		 * enabled and the data path never got its reference.
+		 */
+		vdd_refgen-supply = <&vreg_ldob2>;
+		resets = <&gcc GCC_QUSB2PHY_PRIM_BCR>;
+		reset-names = "phy_reset";
+		/*
+		 * The factory's eUSB2 node carries this and the vendor driver
+		 * applies it as (value, offset) pairs after the PHY is up, i.e.
+		 * writel(0x00, base + 0x58) -- the eUSB2 HPG v1.0.2 update.
+		 * Without it the HS link falls back to full speed right after
+		 * CONNECT_DONE and enumeration dies at SET_ADDRESS.
+		 */
+		qcom,param-override-seq = <0x00 0x58>;
+		/*
+		 * M2582: do NOT set qcom,ref-clk-38m4.
+		 *
+		 * It forces the 38.4 MHz tuning branch while the reference clock is
+		 * declared as 19.2 MHz, and the two programming blocks then fight over
+		 * 0x5c: the verbatim vendor sequence writes 0x90 (its 19.2 branch),
+		 * and the later tuning block overwrites it with 0xc8, which reads back
+		 * as 0x0c -- not the vendor's value for either branch. Leaving the flag
+		 * off keeps both blocks on the 19.2 MHz path (0x5c = 0x90), matching
+		 * the reference clock this board actually declares.
+		 */
+		/*
+		 * M2582: point the PHY at the PMIC eUSB2 repeater.
+		 *
+		 * phy-snps-eusb2.c does
+		 *     phy->repeater = devm_of_phy_optional_get(dev, np, NULL);
+		 * i.e. it takes the first entry of this node's own "phys" property,
+		 * and phy_init() returns 0 for a NULL phy, so a missing repeater is
+		 * silently ignored. Without it the repeater block on the PMIC is
+		 * never brought up, the high-speed signal path is incomplete, the
+		 * link cannot hold high speed, and enumeration dies at SET_ADDRESS.
+		 */
+		phys = <&usb_repeater>;
+		#phy-cells = <0>;
+	};
+
+	/*
+	 * USB3/DP QMP combo PHY. Only the USB3 half matters here: the DWC_usb32
+	 * core will not complete its soft reset until its pipe clock toggles,
+	 * and this PHY's phy_init() is what brings that clock up. Its register
+	 * tables are byte-for-byte the SM8750 ones, so the in-tree driver's
+	 * sm8750_usb3dpphy_cfg is used as-is and nothing here needs a
+	 * qmp-phy-init-seq table.
+	 */
+	usb_qmpphy: phy@88e8000 {
+		compatible = "qcom,tuna-qmp-usb3-dp-phy", "qcom,sm8750-qmp-usb3-dp-phy";
+		reg = <0 0x088e8000 0 0x4000>;
+
+		/*
+		 * Matches the sm8750 reference node exactly:
+		 *   clocks = <aux>, <tcsrcc USB3 clkref>, <com_aux>, <pipe>;
+		 *   clock-names = "aux", "ref", "com_aux", "usb3_pipe";
+		 *
+		 * "ref" is the USB3 PHY's clock reference, which comes from the TCSR
+		 * block. That block is closed to the non-secure kernel (probing its
+		 * clock driver stalls the AXI bus), so it is modelled as a fixed clock
+		 * just like tcsr_ufs_clkref, and the bootloader has already enabled the
+		 * gate because it runs USB itself for fastboot.
+		 *
+		 * Feeding RPMH_CXO_CLK here instead gave the PHY a 38.4 MHz reference
+		 * while its PLL sequence is written for the TCSR reference, so the PLL
+		 * never locked and PHYSTATUS stayed set.
+		 */
+		/*
+		 * M2582: the factory clock list, seven entries, and the difference
+		 * matters. We declared only four, with different names:
+		 *
+		 *   ours:   "aux" "ref"(a local fixed clock) "com_aux" "usb3_pipe"
+		 *   factory:"aux_clk" "pipe_clk" "pipe_clk_mux" "pipe_clk_ext_src"
+		 *           "ref_clk_src" "ref_clk" "com_aux_clk"
+		 *
+		 * so pipe_clk_mux, ref_clk_src and ref_clk were never enabled at all.
+		 * ref_clk is the TCSR USB3 clock gate -- the one that had to be pried
+		 * open with a raw ioremap in this driver because no clock was attached
+		 * to it -- and pipe_clk_mux is the PIPE clock path the SuperSpeed link
+		 * needs. With no PIPE clock the PHY's digital block cannot hold its
+		 * configuration, which is exactly what the readback shows: every value
+		 * from the 165-entry table is missing, and what is there are the PHY's
+		 * own defaults (000=00000000 004=00000000 018=01010101 01c=0a0a0a0a)
+		 * instead of 000=000000c0 004=00000001 018=00000036.
+		 *
+		 * ref_clk uses the fixed-clock stub rather than &tcsrcc, for the same
+		 * reason the eUSB2 PHY does: tcsrcc never probes and a real reference
+		 * makes the PHY defer forever. The gate is already open in hardware.
+		 */
+		/*
+		 * M2582: the first four entries keep the exact names this driver
+		 * looks up by hand -- it does
+		 *
+		 *     qmp->pipe_clk = devm_clk_get(dev, "usb3_pipe");
+		 *
+		 * and takes "aux", "ref" and "com_aux" from QMP_PHY_INIT_CFG-style
+		 * name lists, so renaming them makes the probe fail outright:
+		 *
+		 *     qcom-qmp-combo-phy 88e8000.phy: error -2: failed to get usb3_pipe_clk
+		 *     qcom-qmp-combo-phy 88e8000.phy: probe ... failed with error -2
+		 *     88e8000.phy: no-driver
+		 *
+		 * The factory's remaining three clocks are appended with their own
+		 * names so nothing the driver looks up by name changes:
+		 *
+		 *   pipe_clk_mux     GCC_USB3_PRIM_PHY_PIPE_CLK_SRC  -- the PIPE clock
+		 *                    path the SuperSpeed link runs on
+		 *   ref_clk_src      RPMH CXO
+		 *   ref_clk          the TCSR USB3 gate, as a fixed-clock stub (tcsrcc
+		 *                    never probes and a real reference makes this PHY
+		 *                    defer forever; the gate is already open)
+		 */
+		/*
+		 * M2582: qmp_combo_phy_clk_l[] is hardcoded to the four names
+		 * "aux", "cfg_ahb", "ref", "com_aux" and the driver additionally
+		 * fetches "usb3_pipe" by hand, so only those five are ever resolved
+		 * (the report shows com_init clks=4 for exactly this reason).
+		 *
+		 * "ref" is the important one, and it was pointing at a local
+		 * fixed-clock stub. The factory feeds this PHY the real RPMH CXO as
+		 * ref_clk_src, so the PLL had no genuine reference here -- the same
+		 * class of fault as the eUSB2 PHY whose PLL never locks (0x14 stays 0)
+		 * and whose 165 writes are discarded. Point ref at the real crystal.
+		 *
+		 * ref_clk (the TCSR USB3 gate) is appended as an extra: harmless if
+		 * unused, and it documents that the gate exists.
+		 */
+		/*
+		 * M2582: "cfg_ahb" was missing, and it is the register interface's
+		 * clock. The driver's list is {"aux", "cfg_ahb", "ref", "com_aux"} and
+		 * it logs the resolved rates -- which read
+		 *
+		 *     phy clk[0] aux     rate=19200000
+		 *     phy clk[1] cfg_ahb rate=0          <- no clock at all
+		 *     phy clk[2] ref     rate=38400000
+		 *     phy clk[3] com_aux rate=19200000
+		 *
+		 * and a write/read-back of 0xa5a5a5a5 across the whole register window
+		 * reads back the original values bit for bit, at every offset tested:
+		 *
+		 *     000:00000000->00000000  004:00000000->00000000
+		 *     018:01010101->01010101  400:0a0a0a0a->0a0a0a0a
+		 *
+		 * A register file with no AHB clock cannot latch writes. That is what
+		 * "completely unwritable" looks like, and it explains the entire
+		 * investigation: pre-init and post-init states identical, the 165-entry
+		 * table having no effect, and the PLL never locking.
+		 *
+		 * GCC_USB3_PRIM_PHY_AUX_CLK_SRC is the live AUX source.
+		 */
+		/*
+		 * M2582: all eight clocks the vendor's driver enables, using the
+		 * names this driver looks up (see qmp_combo_phy_clk_l[] and the
+		 * separate devm_clk_get(dev, "usb3_pipe")).
+		 *
+		 * The vendor enables each one individually with clk_prepare() +
+		 * clk_enable(); mainline enables exactly the names in its list via
+		 * clk_bulk_prepare_enable(), so anything missing from that list was
+		 * never turned on even though the device tree declared it.
+		 */
+		clocks = <&gcc GCC_USB3_PRIM_PHY_AUX_CLK>,
+			 <&gcc GCC_USB3_PRIM_PHY_AUX_CLK_SRC>,
+			 <&rpmhcc RPMH_CXO_CLK>,
+			 <&gcc GCC_USB3_PRIM_PHY_COM_AUX_CLK>,
+			 <&gcc GCC_USB3_PRIM_PHY_PIPE_CLK>,
+			 <&gcc GCC_USB3_PRIM_PHY_PIPE_CLK_SRC>,
+			 <&usb3_pipe_clk_ext_src>,
+			 <&rpmhcc RPMH_CXO_CLK>,
+			 <&tcsr_usb3_clkref>;
+		clock-names = "aux", "cfg_ahb", "ref", "com_aux", "usb3_pipe",
+			      "pipe_clk_mux", "pipe_clk_ext_src", "ref_clk_src",
+			      "ref_clk";
+
+		/*
+		 * M2582: the driver's reset list is {"phy", "common"}, and the second
+		 * entry was GCC_USB3_DP_PHY_PRIM_BCR (0x50008) -- the DISPLAYPORT PHY's
+		 * reset line, not the USB3 PHY's. The line this PHY actually needs,
+		 * GCC_USB3PHY_PHY_PRIM_BCR (0x50004), was missing entirely, while the
+		 * driver asserted and deasserted the DP one across the shared block.
+		 *
+		 * That is a plausible reason the SS PHY's register file ignores every
+		 * write even with all its clocks running. The readback shows the PHY's
+		 * own defaults rather than the 165-entry table:
+		 *
+		 *   000=00000000 (want c0)  004=00000000 (want 01)  018=01010101 (want 36)
+		 *
+		 * while aux/ref/com_aux/pipe_clk all measure alive.
+		 */
+		/*
+		 * M2582: match the LIVE device tree, which is the authority -- the
+		 * shipped dtb.img turned out to be from a different build.
+		 *
+		 *   live: resets = <&gcc 0x15>, <&gcc 0x17>
+		 *         reset-names = "global_phy_reset", "phy_reset"
+		 *
+		 * 0x15 is 21 = GCC_USB3_DP_PHY_PRIM_BCR and 0x17 is 23 =
+		 * GCC_USB3_PHY_PRIM_BCR. We had 23 then 25
+		 * (GCC_USB3PHY_PHY_PRIM_BCR), i.e. the wrong second line and the
+		 * reverse order. This driver's reset_list is {"phy", "common"}, so
+		 * map "phy" to the PHY reset (23) and "common" to the DP/global one
+		 * (21) exactly as the live tree pairs them.
+		 */
+		resets = <&gcc GCC_USB3_PHY_PRIM_BCR>,
+			 <&gcc GCC_USB3_DP_PHY_PRIM_BCR>;
+		reset-names = "phy", "common";
+
+		power-domains = <&gcc GCC_USB3_PHY_GDSC>;
+
+		/* Shared with the eUSB2 PHY, as in the vendor DT. */
+		/*
+		 * M2582: same fix as the eUSB2 PHY -- vdda-phy is PMXR2230 L7 at
+		 * 1.8 V, not ldob3 at 0.88 V. vdda-pll (PMXR2230 L4, 1.2 V) was
+		 * already right.
+		 */
+		vdda-phy-supply = <&vreg_ldob7>;
+		vdda-pll-supply = <&vreg_ldob4>;
+
+		/*
+		 * Taken from the factory node. Its driver (phy-msm-ssusb-qmp.ko, in
+		 * msm_ssusb_qmp_ldo_enable) calls regulator_set_voltage() and
+		 * regulator_set_load() with these; mainline only enables the
+		 * regulators and leaves them at whatever the rail defaults to.
+		 *   0xd6d80 = 880000 uV, 0xb798 = 47000 uA
+		 */
+		qcom,vdd-voltage-level = <0 880000 880000>;
+		qcom,vdd-max-load-uA = <47000>;
+		qcom,core-voltage-level = <0 880000 880000>;
+		qcom,core-max-load-uA = <47000>;
+
+		#clock-cells = <1>;
+		#phy-cells = <1>;
+		status = "okay";
+
+
+
+		/*
+		 * Without this the combo PHY cannot work out its orientation or
+		 * mode, logs "unable to determine orientation & mode from
+		 * data-lanes", leaves qmpphy_mode unset, and never brings up the
+		 * USB3 PIPE clock -- which is a clock DCTL.CSFTRST waits for, so
+		 * the DWC3 probe then fails with -110.
+		 *
+		 * qmp_combo_get_dt_usb3_orientation() looks up endpoint 1 of port 0
+		 * and matches its data-lanes against:
+		 *   usb3_data_lanes[] = { {2, NORMAL,  {1, 0}},
+		 *                         {2, REVERSE, {2, 3}} }
+		 * so <1 0> is TYPEC_ORIENTATION_NORMAL. Endpoint 0 (DP) is
+		 * deliberately not described, which leaves dp_orientation NONE and
+		 * makes the driver pick QMPPHY_MODE_USB3_ONLY.
+		 */
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				usb_qmpphy_usb3_in: endpoint@1 {
+					reg = <1>;
+					data-lanes = <1 0>;
+				};
+			};
+		};
+	};
+
+	/*
+	 * Bind the ported vendor glue (drivers/usb/dwc3/dwc3-msm-core.c) instead of
+	 * mainline's dwc3-qcom. Everything here is taken from the vendor's own
+	 * qcom/opensource/devicetree/tuna-usb.dtsi, with two deliberate changes:
+	 *
+	 *   - "phys"/"phy-names" (generic PHY) instead of the vendor's legacy
+	 *     "usb-phy" property, so the PHYs mainline already drives correctly are
+	 *     used. The ported driver was taught to tolerate that.
+	 *   - no "qcom,num-gsi-evt-buffs", which keeps the whole GSI/IPA offload
+	 *     path switched off.
+	 *
+	 * The node keeps its "usb@a600000" name because other DTS files reference
+	 * it by path; the driver matches on compatible, not on the node name.
+	 *
+	 * The 1 MB "core_base" mapping matters: the DBM block the vendor's block
+	 * reset touches lives at 0xf8000 + 0x020c, which mainline's dwc3-qcom
+	 * mapping (0xf8800 bytes) did not reach.
+	 */
+	usb: usb@a600000 {
+		compatible = "qcom,dwc-usb3-msm";
+		reg = <0 0x0a600000 0 0x100000>,
+		      <0 0x01fc6000 0 0x4>;
+		reg-names = "core_base", "tcsr_dyn_en_dis";
+
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		clocks = <&gcc GCC_USB30_PRIM_MASTER_CLK>,
+			 <&gcc GCC_CFG_NOC_USB3_PRIM_AXI_CLK>,
+			 <&gcc GCC_AGGRE_USB3_PRIM_AXI_CLK>,
+			 <&gcc GCC_USB30_PRIM_MOCK_UTMI_CLK>,
+			 <&gcc GCC_USB30_PRIM_SLEEP_CLK>;
+		clock-names = "core_clk", "iface_clk", "bus_aggr_clk",
+			      "utmi_clk", "sleep_clk";
+		assigned-clocks = <&gcc GCC_USB30_PRIM_MOCK_UTMI_CLK>,
+				  <&gcc GCC_USB30_PRIM_MASTER_CLK>;
+		assigned-clock-rates = <19200000>, <200000000>;
+
+
+		resets = <&gcc GCC_USB30_PRIM_BCR>;
+		reset-names = "core_reset";
+
+		interrupts-extended = <&intc GIC_SPI 130 IRQ_TYPE_LEVEL_HIGH>,
+				      <&pdc 14 IRQ_TYPE_EDGE_RISING>,
+				      <&pdc 15 IRQ_TYPE_EDGE_RISING>,
+				      <&pdc 17 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "pwr_event_irq", "dp_hs_phy_irq",
+				  "dm_hs_phy_irq", "ss_phy_irq";
+
+		power-domains = <&gcc GCC_USB30_PRIM_GDSC>;
+		required-opps = <&rpmhpd_opp_nom>;
+
+		interconnects = <&aggre1_noc MASTER_USB3_0 QCOM_ICC_TAG_ALWAYS
+				 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_USB3_0 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "usb-ddr", "apps-usb";
+
+		qcom,use-pdc-interrupts;
+		qcom,use-eusb2-phy;
+		qcom,dis-sending-cm-l1-quirk;
+		qcom,core-clk-rate = <200000000>;
+		qcom,core-clk-rate-hs = <66666667>;
+		qcom,core-clk-rate-disconnected = <133333333>;
+		qcom,pm-qos-latency = <2>;
+
+		dma-coherent;
+
+		dwc3_0: dwc3@a600000 {
+			/*
+			 * M2582: attach the controller to the apps SMMU.
+			 *
+			 * The factory node carries
+			 *   iommus = <&apps_smmu 0x40 0x0>;
+			 *   qcom,iommu-dma = "atomic";
+			 *   memory-region = <&dwc3_mem_region>;
+			 * and that last one reserves IOVA 0x0..0x90000000 as
+			 * unmapped. Our kernel sets
+			 * CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT=y and
+			 * CONFIG_IOMMU_DEFAULT_DMA_STRICT=y, so without an iommus
+			 * property the controller has no usable mapping: the event
+			 * buffer the driver allocates lands near 0x8090_8000, the
+			 * controller's writes to it are dropped, the driver reads
+			 * only the bootloader's leftover 0x00009001 pattern, EP0
+			 * never sees a real event, and the host loops on
+			 * SET_ADDRESS with error -71.
+			 */
+			iommus = <&apps_smmu 0x40 0x0>;
+			qcom,iommu-dma = "atomic";
+			compatible = "snps,dwc3";
+			reg = <0x0 0xa600000 0x0 0xd93c>;
+
+			interrupts = <GIC_SPI 133 IRQ_TYPE_LEVEL_HIGH>;
+
+			/*
+			 * The USB3 GDSCs. The vendor driver wants these as regulators
+			 * (USB3_GDSC-supply), but mainline models them as genpds, so
+			 * with a dummy regulator they never powered on -- clk_summary
+			 * confirmed gcc_usb30_prim_gdsc and gcc_usb3_phy_gdsc were
+			 * "off". Hanging them off the core device lets the DWC3 core's
+			 * own runtime PM activate them (pm_runtime_set_active +
+			 * pm_runtime_enable in dwc3_probe), which does not block the
+			 * way a manual resume of the parent did.
+			 */
+			power-domains = <&gcc GCC_USB30_PRIM_GDSC>,
+					<&gcc GCC_USB3_PHY_GDSC>;
+
+			/*
+			 * Both PHYs, as the vendor DT has them. The USB3 QMP PHY must be
+			 * attached: clk_summary showed gcc_usb3_prim_phy_pipe_clk with
+			 * enable_cnt = 0 when only the HS PHY was referenced, and a
+			 * DWC_usb32 core will not complete DCTL.CSFTRST until that PIPE
+			 * clock is toggling. Nothing else powers the PHY on.
+			 */
+			/*
+			 * M2582: keep phys/phy-names, NOT the factory's usb-phy.
+			 *
+			 * The factory node uses `usb-phy = <&eusb2_phy0>, <&usb_qmp_dp_phy>`,
+			 * which drives the DWC3 core down the legacy usb_phy path. That
+			 * was tried and it breaks everything: all four PHY pointers come
+			 * back NULL, because mainline's phy-snps-eusb2.c registers only
+			 * the generic phy API -- no usb_phy ops -- so neither framework
+			 * can find the PHY. Measured:
+			 *
+			 *     dwc3 phys usb2=0000... usb3=0000... legacy2=0000... legacy3=0000...
+			 *     phy_init enter usb2=0 usb3=0
+			 *
+			 * The vendor's own PHY driver evidently registers both APIs; ours
+			 * does not. Stay on the generic path.
+			 */
+			phys = <&usb_hsphy>, <&usb_qmpphy QMP_USB43DP_USB3_PHY>;
+			phy-names = "usb2-phy", "usb3-phy";
+
+			dr_mode = "peripheral";
+
+			/*
+			 * M2582: do not advertise USB2 Link Power Management.
+			 *
+			 * Measured against the vendor's running kernel:
+			 *
+			 *   DCFG  vendor 00a0082d   ours 00e00805   -> bit 22 = LPM_CAP, set only in ours
+			 *   DCTL  vendor 80f00000   ours 8f000000   -> HIRD_THRES (USB2 LPM branch) only in ours
+			 *
+			 * The two registers agree with each other on both sides, and that
+			 * agreement is the point: with LPM_CAP advertised the host may put
+			 * the link into L1, and the link then sits suspended instead of
+			 * answering. That is exactly the observed failure -- the host
+			 * attaches at high speed (so the PHY, repeater and PIPE clock are
+			 * all working) and then gets nothing back:
+			 *
+			 *   usb 3-2: new high-speed USB device number 78
+			 *   usb 3-2: new full-speed  USB device number 80
+			 *   usb 3-2: device not accepting address, error -71
+			 *   endpoint events reaching the gadget: 0
+			 *
+			 * Every PHY-side register is already byte-identical to the vendor's,
+			 * including the PMIC eUSB2 repeater, whose twelve tuning values match
+			 * this driver's built-in table exactly. Refusing LPM is what makes
+			 * DCFG and DCTL match the working stack.
+			 */
+			snps,usb2-gadget-lpm-disable;
+			/*
+			 * M2582: the factory value, restored.
+			 *
+			 * This was briefly changed to "high-speed" on the theory that
+			 * DCFG.DEVSPD should match the high-speed link we observed. That
+			 * was backwards: maximum-speed is what ALLOWS the core to attempt
+			 * SuperSpeed at all, and with it set to high-speed the SS link is
+			 * never tried, so the device can only ever come up on the eUSB2
+			 * high-speed PHY.
+			 *
+			 * Ground truth from the running vendor stack settles it -- its UDC
+			 * reports
+			 *
+			 *     /sys/class/udc/<name>/state         = configured
+			 *     /sys/class/udc/<name>/current_speed = super-speed
+			 *
+			 * i.e. the working stack runs on the QMP SuperSpeed PHY, not on
+			 * eUSB2. Allow the same here.
+			 */
+			maximum-speed = "super-speed-plus";
+
+			snps,disable-clk-gating;
+			snps,has-lpm-erratum;
+			snps,hird-threshold = /bits/ 8 <0x0>;
+			snps,is-utmi-l1-suspend;
+			snps,dis-u1-entry-quirk;
+			snps,dis-u2-entry-quirk;
+			snps,dis_u2_susphy_quirk;
+			snps,ssp-u3-u0-quirk;
+			dma-coherent;
+		};
+	};
+	/* USB3 PIPE clock wrapper source, consumed by the GCC node by name. */
+	usb3_phy_wrapper_gcc_usb30_pipe_clk: usb3-phy-wrapper-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <125000000>;
+	};
+
+};
+
+

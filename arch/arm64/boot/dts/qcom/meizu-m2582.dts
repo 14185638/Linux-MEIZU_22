@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/dts-v1/;
+#include "tuna.dtsi"
+#include "meizu-m2582-memory.dtsi"
+#include "meizu-m2582-power.dtsi"
+#include "tuna-display.dtsi"
+#include "tuna-usb.dtsi"
+
+/ {
+	model = "Meizu 22 (M2582) — experimental Linux bring-up";
+	compatible = "meizu,m2582", "qcom,tuna";
+	chassis-type = "handset";
+	/* Live socinfo: SM8735 1.1, foundry 1, QRD platform 1.0. */
+	qcom,msm-id = <0x1028f 0x10001>;
+	qcom,board-id = <0x1000b 0x01>;
+	/* ro.boot.proj_version=2, ro.boot.hw_version=6. */
+	meizu,board-id = <0x02 0x06>;
+	/* Live SMEM PMIC model order, no invented unused slots/revisions. */
+	qcom,pmic-id-size = <7>;
+	qcom,pmic-id = <74 80 69 70 69 86 72>;
+	aliases { serial0 = &uart7; };
+	chosen {
+		bootargs = "console=tty0 console=ttyGS0,115200n8 loglevel=8 ignore_loglevel clk_ignore_unused pd_ignore_unused cpuidle.off=1 initcall_debug rdinit=/init";
+	};
+};
+/* Ordinary USB cable diagnostics: keep the unconnected UART disabled. */
+&uart7 { status = "disabled"; };
+&ufsphy_mem {
+	vdda-phy-supply = <&vreg_ldof1>;
+	vdda-pll-supply = <&vreg_ldob4>;
+	vdda-qref-supply = <&vreg_ldob2>;
+	status = "okay";
+};
+&ufshc_mem {
+	vcc-supply = <&vreg_ldob12>;
+	vccq-supply = <&vreg_ldof3>;
+	vcc-max-microamp = <1200000>;
+	vccq-max-microamp = <1200000>;
+	status = "okay";
+};

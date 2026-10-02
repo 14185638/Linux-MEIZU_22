@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Experimental active-only RPMh votes; verified firmware resource names. */
+&apps_rsc {
+	regulators {
+		compatible = "qcom,tuna-boot-regulators";
+		/*
+		 * DO NOT REGISTER an "ldok7" (PMR735B L7) regulator here.
+		 *
+		 * The factory DT really does feed both USB PHYs this rail
+		 * (vdd-supply = <0x22f> = pmr735b_l7, RPMh resource "ldok7") while our
+		 * PHYs take PMXR2230 ldob3, and that looked like a promising
+		 * explanation for both PHYs silently discarding every register write.
+		 *
+		 * It cannot be tested from this kernel: the resource resolves in the
+		 * CMD_DB (otherwise probe would report Missing resource), but ANY vote
+		 * for it stalls the RSC and the board resets. Measured twice, and the
+		 * second time with neither always-on nor boot-on set, which proves the
+		 * write comes from the regulator core applying the min/max constraints
+		 * during registration -- not from an enable vote:
+		 *
+		 *     calling tuna_boot_regulator_driver_init
+		 *     pmr735b_l7: Setting 880000-950000uV     <- dies here
+		 *     ldob2: Setting 880000-925000uV
+		 *
+		 * So the rail cannot be added to this DT as an RPMh resource at all.
+		 * The factory reaches it through a path this firmware accepts and we do
+		 * not; that mechanism has to be understood before this is retried.
+		 */
+		/*
+		 * DO NOT ADD an "ldok7" (PMR735B L7) regulator here.
+		 *
+		 * The factory DT really does feed both USB PHYs that rail
+		 * (vdd-supply = <0x22f> = pmr735b_l7, RPMh resource "ldok7"), and our
+		 * PHYs were pointed at PMXR2230 ldob3 instead -- which looked like the
+		 * explanation for both PHYs silently discarding register writes.
+		 *
+		 * Adding it hangs the board. The last thing printed before the screen
+		 * stopped updating and the phone reset was:
+		 *
+		 *     calling tuna_boot_regulator_driver_init
+		 *     pmr735b_l7: Setting 880000-950000uV
+		 *     ldob2: Setting 880000-925000uV
+		 *
+		 * i.e. it dies at that first vote. A write to an RPMh resource this
+		 * firmware does not own stalls the RSC, so "ldok7" is not one of the
+		 * resource names this board accepts -- the ones in this file are
+		 * "verified firmware resource names" and ldok7 is evidently not among
+		 * them. Do not re-add it without confirming the name the firmware
+		 * actually exposes.
+		 */
+		vreg_ldob2: regulator-ldob2 {
+			qcom,resource-name = "ldob2";
+			regulator-name = "ldob2";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <925000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob3: regulator-ldob3 {
+			qcom,resource-name = "ldob3";
+			regulator-name = "ldob3";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <950000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob4: regulator-ldob4 {
+			qcom,resource-name = "ldob4";
+			regulator-name = "ldob4";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob5: regulator-ldob5 {
+			qcom,resource-name = "ldob5";
+			regulator-name = "ldob5";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob7: regulator-ldob7 {
+			qcom,resource-name = "ldob7";
+			regulator-name = "ldob7";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob8: regulator-ldob8 {
+			qcom,resource-name = "ldob8";
+			regulator-name = "ldob8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob12: regulator-ldob12 {
+			qcom,resource-name = "ldob12";
+			regulator-name = "ldob12";
+			regulator-min-microvolt = <2504000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob17: regulator-ldob17 {
+			qcom,resource-name = "ldob17";
+			regulator-name = "ldob17";
+			regulator-min-microvolt = <2700000>;
+			regulator-max-microvolt = <3544000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldob19: regulator-ldob19 {
+			qcom,resource-name = "ldob19";
+			regulator-name = "ldob19";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3544000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldod3: regulator-ldod3 {
+			qcom,resource-name = "ldod3";
+			regulator-name = "ldod3";
+			regulator-min-microvolt = <1208000>;
+			regulator-max-microvolt = <1208000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldof1: regulator-ldof1 {
+			qcom,resource-name = "ldof1";
+			regulator-name = "ldof1";
+			regulator-min-microvolt = <912000>;
+			regulator-max-microvolt = <958000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+		vreg_ldof3: regulator-ldof3 {
+			qcom,resource-name = "ldof3";
+			regulator-name = "ldof3";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
+};

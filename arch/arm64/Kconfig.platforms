@@ -466,3 +466,45 @@ config ARCH_ZYNQMP
 	  This enables support for Xilinx ZynqMP Family
 
 endmenu # "Platform selection"
+
+config ARM64_MEIZU_M2582_BUILTIN_DTB
+	bool "Experimental Meizu M2582 built-in DTB handoff"
+	depends on ARCH_QCOM && OF
+	select GENERIC_BUILTIN_DTB
+	help
+	  Use the embedded M2582 mainline DT after importing the bootloader's
+	  RAM map and static reservations. This is a temporary bring-up option
+	  for the M2582 bootloader, which has no fastboot boot command.
+	  It requires a matching M2582 firmware DT. If unsure, say N.
+
+config ARM64_MEIZU_M2582_DT_IMPORT
+	bool "Import firmware RAM/reservations into the embedded M2582 DT"
+	depends on ARM64_MEIZU_M2582_BUILTIN_DTB
+	help
+	  Rebuild the embedded M2582 DT at boot from the bootloader firmware DT,
+	  importing its memory banks, static reservations and /chosen EFI state.
+
+	  The embedded DT already carries the memory banks and reservations
+	  captured from this device's firmware, so this is off by default while
+	  the handoff is being debugged. Say N to use the embedded DT verbatim.
+
+config ARM64_MEIZU_M2582_MARKER
+	bool
+	depends on ARCH_QCOM && OF
+	default y
+	select CRC32
+	help
+	  Write phase and CRC markers to the unused tail of the firmware ramoops
+	  reservation during early boot and controlled reboot diagnostics.
+
+config ARM64_MEIZU_M2582_BOOT_PROBE
+	bool "M2582 CPU/RAM diagnostic probe (peripherals disabled)"
+	depends on ARM64_MEIZU_M2582_BUILTIN_DTB
+	help
+	  Select a diagnostic-only board DT for architecture bring-up.
+	  This does not test UFS, USB or display. If unsure, say N.
+
+config BUILTIN_DTB_NAME
+	string
+	default "qcom/meizu-m2582-boot-probe" if ARM64_MEIZU_M2582_BOOT_PROBE
+	default "qcom/meizu-m2582" if ARM64_MEIZU_M2582_BUILTIN_DTB

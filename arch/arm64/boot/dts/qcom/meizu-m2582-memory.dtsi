@@ -1,0 +1,224 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Captured M2582 memory/reservations. Never replace with an assumed contiguous bank. */
+/ {
+	memory@81300000 {
+		device_type = "memory";
+		reg = <0x0 0x81300000 0x0 0x100000>,
+		      <0x0 0x81960000 0x0 0xa0000>,
+		      <0x0 0x81a40000 0x0 0x1c0000>,
+		      <0x0 0x81cf5000 0x0 0xb000>,
+		      <0x0 0x81f00000 0x0 0x300000>,
+		      <0x0 0x82460000 0x0 0x40000>,
+		      <0x0 0x82800000 0x0 0x2200000>,
+		      <0x0 0x94e9c000 0x0 0x64000>,
+		      <0x0 0x96f80000 0x0 0x1980000>,
+		      <0x0 0x9d000000 0x0 0x1b000000>,
+		      <0x0 0xb81c0000 0x0 0x1fe40000>,
+		      <0x0 0xe3720000 0x0 0x1c0e0000>,
+		      <0x0 0xffe00000 0x0 0x200000>,
+		      <0x8 0x80000000 0x0 0x2f6fd000>,
+		      <0x8 0xb0000000 0x0 0x8f00000>,
+		      <0x8 0xc0000000 0x1 0x40000000>,
+		      <0xa 0x0 0x2 0x0>;
+	};
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		/* Live Android ramoops parameters; retained for B-slot log recovery. */
+		ramoops@bffbff000 {
+			compatible = "ramoops";
+			/* Keep the final 4 KiB for the cross-reboot M2582 marker. */
+			reg = <0x0b 0xffbff000 0x0 0x3ff000>;
+			no-map;
+			record-size = <0>;
+			console-size = <0x40000>;
+			pmsg-size = <0x200000>;
+			ftrace-size = <0>;
+			mem-type = <0>;
+		};
+		m2582-marker@bffffe000 {
+			reg = <0x0b 0xffffe000 0x0 0x1000>;
+			no-map;
+		};
+		gunyah-hyp-region@80000000 {
+			reg = <0x0 0x80000000 0x0 0xe00000>;
+			no-map;
+		};
+		cpusys-vm-region@80e00000 {
+			reg = <0x0 0x80e00000 0x0 0x400000>;
+			no-map;
+		};
+		cpucp-region@81200000 {
+			reg = <0x0 0x81200000 0x0 0x100000>;
+			no-map;
+		};
+		xbl-dtlog-region@81a00000 {
+			reg = <0x0 0x81a00000 0x0 0x40000>;
+			no-map;
+		};
+		aop-image-region@81c00000 {
+			reg = <0x0 0x81c00000 0x0 0x60000>;
+			no-map;
+		};
+		aop-cmd-db-region@81c60000 {
+			reg = <0x0 0x81c60000 0x0 0x20000>;
+			no-map;
+			compatible = "qcom,cmd-db";
+		};
+		aop-config-region@81c80000 {
+			reg = <0x0 0x81c80000 0x0 0x20000>;
+			no-map;
+		};
+		tme-crash-dump-region@81ca0000 {
+			reg = <0x0 0x81ca0000 0x0 0x40000>;
+			no-map;
+		};
+		tme-log-region@81ce0000 {
+			reg = <0x0 0x81ce0000 0x0 0x4000>;
+			no-map;
+		};
+		uefi-log-region@81ce4000 {
+			reg = <0x0 0x81ce4000 0x0 0x10000>;
+			no-map;
+		};
+		chipinfo-region@81cf4000 {
+			reg = <0x0 0x81cf4000 0x0 0x1000>;
+			no-map;
+		};
+		smem-region@81d00000 {
+			reg = <0x0 0x81d00000 0x0 0x200000>;
+			no-map;
+		};
+		cpucp-scandump-region@82200000 {
+			reg = <0x0 0x82200000 0x0 0x180000>;
+			no-map;
+		};
+		adsp-mhi-region@82380000 {
+			reg = <0x0 0x82380000 0x0 0x20000>;
+			no-map;
+		};
+		soccp-sdi-region@823a0000 {
+			reg = <0x0 0x823a0000 0x0 0x40000>;
+			no-map;
+		};
+		pmic-minii-dump-region@823e0000 {
+			reg = <0x0 0x823e0000 0x0 0x80000>;
+			no-map;
+		};
+		pvm-fw-region@824a0000 {
+			reg = <0x0 0x824a0000 0x0 0x100000>;
+			no-map;
+		};
+		hyp-mem-database-region@825a0000 {
+			reg = <0x0 0x825a0000 0x0 0x60000>;
+			no-map;
+		};
+		global-sync-region@82600000 {
+			reg = <0x0 0x82600000 0x0 0x100000>;
+			no-map;
+		};
+		tz-stat-region@82700000 {
+			reg = <0x0 0x82700000 0x0 0x100000>;
+			no-map;
+		};
+		qdss-apps-region@82800000 {
+			reg = <0x0 0x82800000 0x0 0x2000000>;
+			no-map;
+		};
+		dsm-partition-1-region@84a00000 {
+			reg = <0x0 0x84a00000 0x0 0x3700000>;
+			no-map;
+		};
+		mpss-region@88100000 {
+			reg = <0x0 0x88100000 0x0 0xcd00000>;
+			no-map;
+		};
+		q6-mpss-dtb-region@94e00000 {
+			reg = <0x0 0x94e00000 0x0 0x80000>;
+			no-map;
+		};
+		ipa-fw-region@94e80000 {
+			reg = <0x0 0x94e80000 0x0 0x10000>;
+			no-map;
+		};
+		ipa-gsi-region@94e90000 {
+			reg = <0x0 0x94e90000 0x0 0xa000>;
+			no-map;
+		};
+		gpu-microcode-region@94e9a000 {
+			reg = <0x0 0x94e9a000 0x0 0x2000>;
+			no-map;
+		};
+		camera-region@94f00000 {
+			reg = <0x0 0x94f00000 0x0 0x800000>;
+			no-map;
+		};
+		camera-2-region@95700000 {
+			reg = <0x0 0x95700000 0x0 0x800000>;
+			no-map;
+		};
+		video-region@95f00000 {
+			reg = <0x0 0x95f00000 0x0 0x800000>;
+			no-map;
+		};
+		cvp-region@96700000 {
+			reg = <0x0 0x96700000 0x0 0x700000>;
+			no-map;
+		};
+		soccp-region@96e00000 {
+			reg = <0x0 0x96e00000 0x0 0x180000>;
+			no-map;
+		};
+		wpss-region@97000000 {
+			reg = <0x0 0x97000000 0x0 0x1900000>;
+			no-map;
+		};
+		cdsp-region@98900000 {
+			reg = <0x0 0x98900000 0x0 0x1400000>;
+			no-map;
+		};
+		q6-cdsp-dtb-region@99d00000 {
+			reg = <0x0 0x99d00000 0x0 0x80000>;
+			no-map;
+		};
+		q6-adsp-dtb-region@99d80000 {
+			reg = <0x0 0x99d80000 0x0 0x80000>;
+			no-map;
+		};
+		adspslpi-region@99e00000 {
+			reg = <0x0 0x99e00000 0x0 0x3200000>;
+			no-map;
+		};
+		wlan-msa-region@a6400000 {
+			reg = <0x0 0xa6400000 0x0 0xc00000>;
+			no-map;
+		};
+		xbl-ramdump-region@b8000000 {
+			reg = <0x0 0xb8000000 0x0 0x1c0000>;
+			no-map;
+		};
+		tz-merged-region@d8000000 {
+			reg = <0x0 0xd8000000 0x0 0x600000>;
+			no-map;
+		};
+		trust-ui-vm-region@f3800000 {
+			reg = <0x0 0xf3800000 0x0 0x4400000>;
+			no-map;
+		};
+		oem-vm-region@f7c00000 {
+			reg = <0x0 0xf7c00000 0x0 0x4c00000>;
+			no-map;
+		};
+		llcc-lpi-region@ff800000 {
+			reg = <0x0 0xff800000 0x0 0x600000>;
+			no-map;
+		};
+		splash-region@fc800000 {
+			/* Not no-map: the bring-up console paints this buffer and
+			 * needs it reachable through the linear map. Reserved, so
+			 * the page allocator still never touches it. */
+			reg = <0x0 0xfc800000 0x0 0x2b00000>;
+		};
+	};
+};

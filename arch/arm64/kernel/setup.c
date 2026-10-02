@@ -27,6 +27,7 @@
 #include <linux/proc_fs.h>
 #include <linux/memblock.h>
 #include <linux/of_fdt.h>
+#include <linux/libfdt.h>
 #include <linux/efi.h>
 #include <linux/psci.h>
 #include <linux/sched/task.h>
@@ -167,14 +168,54 @@ static void __init smp_build_mpidr_hash(void)
 		pr_warn("Large number of MPIDR hash buckets detected\n");
 }
 
+#ifdef CONFIG_ARM64_MEIZU_M2582_MARKER
+#include "meizu-m2582-fdt.h"
+#endif
+
 static void __init setup_machine_fdt(phys_addr_t dt_phys)
 {
 	int size = 0;
 	void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL);
+	/*
+	 * The read-only remap at the end of this function must keep targeting the
+	 * pages that fixmap_remap_fdt() already installed. Changing the physical
+	 * address of an already-populated fixmap PTE trips
+	 * BUG_ON(!pgattr_change_is_safe()) in alloc_init_cont_pte().
+	 */
+	phys_addr_t boot_dt_phys = dt_phys;
 	const char *name;
+
+#if defined(CONFIG_ARM64_MEIZU_M2582_MARKER) && \
+	!defined(CONFIG_ARM64_MEIZU_M2582_BUILTIN_DTB)
+	meizu_m2582_marker_early();
+#endif
 
 	if (dt_virt)
 		memblock_reserve(dt_phys, size);
+
+#ifdef CONFIG_ARM64_MEIZU_M2582_BUILTIN_DTB
+#ifdef CONFIG_ARM64_MEIZU_M2582_DT_IMPORT
+	if (dt_virt) {
+		void *m2582_dt = meizu_m2582_fixup_fdt(dt_virt);
+
+		if (m2582_dt) {
+			dt_virt = m2582_dt;
+			dt_phys = __pa_symbol(dt_virt);
+			size = fdt_totalsize(dt_virt);
+			memblock_reserve(dt_phys, size);
+		}
+	}
+#else
+	/*
+	 * Use the embedded mainline DT verbatim. It already carries the memory
+	 * banks and firmware reservations captured from this device, and the
+	 * bootloader-only /chosen state (EFI maps, initrd) is not needed.
+	 */
+	dt_virt = meizu_m2582_embedded_dtb(&size);
+	dt_phys = __pa_symbol(dt_virt);
+	memblock_reserve(dt_phys, size);
+#endif
+#endif
 
 	/*
 	 * dt_virt is a fixmap address, hence __pa(dt_virt) can't be used.
@@ -197,7 +238,7 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 	}
 
 	/* Early fixups are done, map the FDT as read-only now */
-	fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
+	fixmap_remap_fdt(boot_dt_phys, &size, PAGE_KERNEL_RO);
 
 	name = of_flat_dt_get_machine_name();
 	if (!name)
@@ -289,7 +330,17 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	early_fixmap_init();
 	early_ioremap_init();
 
+#ifdef CONFIG_ARM64_MEIZU_M2582_MARKER
+	/*
+	 * Very first observable action: flip the bootloader's splash buffer.
+	 * early_ioremap is live here and is not yet torn down, so this works
+	 * even for a no-map region and before the firmware DT is parsed.
+	 */
+	meizu_m2582_splash_early();
+#endif
+
 	setup_machine_fdt(__fdt_pointer);
+
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
@@ -329,17 +380,47 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 			   FW_BUG "Booted with MMU enabled!");
 	}
 
+
 	arm64_memblock_init();
 
+
 	paging_init();
+
+#ifdef CONFIG_ARM64_MEIZU_M2582_MARKER
+	/*
+	 * The linear map now covers all normal memory, so start the
+	 * driver-free console on the bootloader's live splash framebuffer.
+	 * Registering here replays the whole printk ring buffer, so the
+	 * screen shows every message since start_kernel().
+	 */
+	meizu_m2582_splash_console();
+#endif
 
 	acpi_table_upgrade();
 
 	/* Parse the ACPI tables for possible boot-time configuration */
 	acpi_boot_table_init();
 
-	if (acpi_disabled)
-		unflatten_device_tree();
+	if (acpi_disabled) {
+		/*
+		 * M2582: copy the flat blob instead of unflattening it in place.
+		 *
+		 * This board boots from a device tree that is built into the kernel
+		 * image (CONFIG_ARM64_MEIZU_M2582_BUILTIN_DTB), so it lives in
+		 * .init.data. unflatten_device_tree() leaves every device_node's
+		 * property pointers aimed straight at that blob, and free_initmem()
+		 * frees and unmaps it a few seconds into boot. Any later device tree
+		 * access then faults -- which is what produced the intermittent oopses
+		 * in __pi_strcmp/__pi_memcpy_generic from of_find_property(),
+		 * of_device_uevent(), pinctrl_dt_to_map() and ufs_devfreq_scale(),
+		 * all of which read properties well after free_initmem() has run.
+		 *
+		 * unflatten_and_copy_device_tree() moves the blob to memblock memory
+		 * and repoints initial_boot_params at the copy, so the live tree no
+		 * longer references .init.data.
+		 */
+		unflatten_and_copy_device_tree();
+	}
 
 	bootmem_init();
 

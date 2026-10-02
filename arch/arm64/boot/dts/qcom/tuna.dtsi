@@ -1,0 +1,582 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Qualcomm SM8735 (TUNA). Addresses/topology from the captured firmware DT. */
+#include <dt-bindings/clock/qcom,gcc-tuna.h>
+#include <dt-bindings/clock/qcom,dispcc-tuna.h>
+#include <dt-bindings/clock/qcom,tcsrcc-sun.h>
+#include <dt-bindings/clock/qcom,dsi-phy-28nm.h>
+#include <dt-bindings/clock/qcom,rpmh.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interconnect/qcom,tuna.h>
+#include <dt-bindings/phy/phy-qcom-qmp.h>
+#include <dt-bindings/interconnect/qcom,icc.h>
+#include <dt-bindings/power/qcom,rpmhpd.h>
+#include <dt-bindings/power/qcom-rpmpd.h>
+#include <dt-bindings/soc/qcom,rpmh-rsc.h>
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	interrupt-parent = <&intc>;
+
+	clocks {
+		xo_board: xo-board {
+			compatible = "fixed-clock";
+			clock-frequency = <76800000>;
+			#clock-cells = <0>;
+		};
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			clock-frequency = <32000>;
+			#clock-cells = <0>;
+		};
+		bi_tcxo: bi-tcxo {
+			compatible = "fixed-factor-clock";
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			clock-div = <2>;
+			clock-mult = <1>;
+			#clock-cells = <0>;
+		};
+		bi_tcxo_ao: bi-tcxo-ao {
+			compatible = "fixed-factor-clock";
+			clocks = <&rpmhcc RPMH_CXO_CLK_A>;
+			clock-div = <2>;
+			clock-mult = <1>;
+			#clock-cells = <0>;
+		};
+	};
+
+	cpus {
+		#address-cells = <2>;
+		#size-cells = <0>;
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x0>;
+			enable-method = "psci";
+		};
+		cpu1: cpu@100 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x100>;
+			enable-method = "psci";
+		};
+		cpu2: cpu@200 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x200>;
+			enable-method = "psci";
+		};
+		cpu3: cpu@300 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x300>;
+			enable-method = "psci";
+		};
+		cpu4: cpu@400 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x400>;
+			enable-method = "psci";
+		};
+		cpu5: cpu@500 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x500>;
+			enable-method = "psci";
+		};
+		cpu6: cpu@600 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a720";
+			reg = <0 0x600>;
+			enable-method = "psci";
+		};
+		cpu7: cpu@700 {
+			device_type = "cpu";
+			compatible = "arm,cortex-x4";
+			reg = <0 0x700>;
+			enable-method = "psci";
+		};
+	};
+
+	psci { compatible = "arm,psci-1.0"; method = "smc"; };
+	firmware { scm: scm { compatible = "qcom,scm"; }; };
+	pmu { compatible = "arm,armv8-pmuv3"; interrupts = <GIC_PPI 7 IRQ_TYPE_LEVEL_HIGH>; };
+	timer {
+		compatible = "arm,armv8-timer";
+		/* Four PPIs and the CPU mask match the captured firmware DT. */
+		interrupts = <GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			     <GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			     <GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			     <GIC_PPI 12 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>;
+		clock-frequency = <19200000>;
+	};
+
+	soc: soc@0 {
+		compatible = "simple-bus";
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges = <0 0 0 0 0x10 0>;
+		dma-ranges = <0 0 0 0 0x10 0>;
+
+		gcc: clock-controller@100000 {
+			compatible = "qcom,tuna-gcc";
+			reg = <0 0x00100000 0 0x1f4200>;
+			clocks = <&bi_tcxo>, <&sleep_clk>,
+				 <&ufsphy_mem 0>, <&ufsphy_mem 1>, <&ufsphy_mem 2>,
+				 <&usb3_phy_wrapper_clk>;
+			clock-names = "bi_tcxo", "sleep_clk", "ufs_phy_rx_symbol_0_clk",
+				      "ufs_phy_rx_symbol_1_clk", "ufs_phy_tx_symbol_0_clk",
+				      "usb3_phy_wrapper_gcc_usb30_pipe_clk";
+			power-domains = <&rpmhpd RPMHPD_CX>, <&rpmhpd RPMHPD_MX>;
+			required-opps = <&rpmhpd_opp_nom>, <&rpmhpd_opp_nom>;
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			#power-domain-cells = <1>;
+		};
+
+		tcsrcc: clock-controller@1fbf000 {
+			compatible = "qcom,tuna-tcsrcc";
+			reg = <0 0x01fbf000 0 0x20>;
+			#clock-cells = <1>;
+			/*
+			 * The TCSR block is closed to the non-secure kernel: merely
+			 * probing its clock driver stalls the AXI bus. The bootloader
+			 * has already enabled the clock reference gates it owns, so
+			 * they are modelled as fixed clocks below instead.
+			 *
+			 * M2582: leaving this disabled is load-bearing. Enabling it to
+			 * hand the eUSB2 PHY a "real" reference clock does not work --
+			 * the provider never comes up, the PHY's devm_clk_get() defers
+			 * forever, and the board loses USB entirely. The USB2 gate is
+			 * already open anyway (0x1fbf004 bit 0 reads 1 before we touch
+			 * it), so the fixed-clock stubs lose nothing.
+			 */
+			status = "disabled";
+		};
+
+		/*
+		 * The USB3 PHY's clock references.
+		 *
+		 * The factory node has two of them and a mux:
+		 *   ref_clk_src = <0x1b 0x97>   the TCSRCC-derived reference
+		 *   ref_clk     = <0x03>        the TCSR syscon reference
+		 *   pipe_clk_ext_src = mux(ref_clk_src, ref_clk)
+		 *
+		 * and its driver does, in msm_ssphy_qmp_enable_clks():
+		 *   clk_set_parent(pipe_clk_ext_src, ref_clk_src);   when bringing up
+		 *   clk_set_parent(pipe_clk_ext_src, ref_clk);       when taking down
+		 *
+		 * So the PHY's reference is ref_clk_src, routed through that mux. Both
+		 * live in the TCSR block, which is closed to the non-secure kernel
+		 * (probing its clock driver stalls the AXI bus), so they are modelled
+		 * as fixed clocks just like tcsr_ufs_clkref; the bootloader has already
+		 * enabled the gates because it runs USB itself for fastboot.
+		 *
+		 * mainline has no generic device-tree clock mux, so the mux is modelled
+		 * as a fixed-factor clock sourced from ref_clk_src, which is exactly the
+		 * parent the vendor driver selects.
+		 */
+		tcsr_usb3_clkref: tcsr-usb3-clkref {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <19200000>;
+		};
+
+		tcsr_usb3_ref_clk: tcsr-usb3-ref-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <19200000>;
+		};
+
+		/*
+		 * M2582: the USB3 PHY wrapper's pipe clock, by the exact name the GCC
+		 * driver looks up.
+		 *
+		 * gcc-tuna.c takes this mux's parents by fw_name:
+		 *
+		 *   static const struct clk_parent_data gcc_parent_data_12[] = {
+		 *       { .fw_name = "usb3_phy_wrapper_gcc_usb30_pipe_clk" },
+		 *       { .fw_name = "bi_tcxo" },
+		 *       { .hw = &gcc_gpll0_out_even.clkr.hw },
+		 *   };
+		 *   gcc_usb3_prim_phy_pipe_clk_src -> .parent_data = gcc_parent_data_12
+		 *
+		 * and the GCC is a core clock controller that probes very early, long
+		 * before the QMP PHY. Pointing this entry at the PHY (as we did) means
+		 * the provider does not exist yet at lookup time, so parent 0 is NULL,
+		 * the mux selects nothing, and the whole PIPE chain reports rate 0 with
+		 * clk_round_rate() = -EINVAL -- measured exactly that:
+		 *
+		 *   M2582: pipe_clk before cur=0 round=-22 en=0
+		 *
+		 * With no PIPE clock the SuperSpeed link cannot train, which is why the
+		 * vendor's device comes up at SuperSpeed (usb 4-2, its clk_summary shows
+		 * this clock and its children at enable_cnt=1, rate 1000) while ours
+		 * only ever appears at High Speed (usb 3-2). Every PHY-side register is
+		 * already byte-identical to the vendor's, including PCS status 0x84, so
+		 * this clock chain is the remaining difference.
+		 *
+		 * The real source is the PHY's own PLL through the wrapper; 1000 Hz is
+		 * the placeholder rate the vendor's clock tree reports for it.
+		 */
+		usb3_phy_wrapper_clk: usb3-phy-wrapper-clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <1000>;
+		};
+
+		usb3_pipe_clk_ext_src: usb3-pipe-clk-ext-src {
+			compatible = "fixed-factor-clock";
+			clocks = <&tcsr_usb3_clkref>;
+			clock-div = <1>;
+			clock-mult = <1>;
+			#clock-cells = <0>;
+		};
+
+		tcsr_ufs_clkref: tcsr-ufs-clkref {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <19200000>;
+		};
+
+		qupv3_1: geniqup@ac0000 {
+			compatible = "qcom,geni-se-qup";
+			reg = <0 0x00ac0000 0 0x2000>;
+			clocks = <&gcc GCC_QUPV3_WRAP_1_M_AHB_CLK>, <&gcc GCC_QUPV3_WRAP_1_S_AHB_CLK>;
+			clock-names = "m-ahb", "s-ahb";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+
+			uart7: serial@a9c000 {
+				compatible = "qcom,geni-debug-uart";
+				reg = <0 0x00a9c000 0 0x4000>;
+				interrupts = <GIC_SPI 579 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&gcc GCC_QUPV3_WRAP1_S7_CLK>;
+				clock-names = "se";
+				interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+						<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+				interconnect-names = "qup-core", "qup-config";
+				status = "disabled";
+			};
+		};
+
+		ufsphy_mem: phy@1d80000 {
+			compatible = "qcom,tuna-qmp-ufs-phy";
+			reg = <0 0x01d80000 0 0x2000>;
+			clocks = <&rpmhcc RPMH_CXO_CLK>, <&gcc GCC_UFS_PHY_PHY_AUX_CLK>, <&tcsr_ufs_clkref>;
+			clock-names = "ref", "ref_aux", "qref";
+			resets = <&ufshc_mem 0>;
+			reset-names = "ufsphy";
+			power-domains = <&gcc GCC_UFS_MEM_PHY_GDSC>;
+			#clock-cells = <1>;
+			#phy-cells = <0>;
+			status = "disabled";
+		};
+
+		ufshc_mem: ufs@1d84000 {
+			compatible = "qcom,tuna-ufshc", "qcom,ufshc", "jedec,ufs-2.0";
+			reg = <0 0x01d84000 0 0x3000>;
+			interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&gcc GCC_UFS_PHY_AXI_CLK>, <&gcc GCC_AGGRE_UFS_PHY_AXI_CLK>,
+				 <&gcc GCC_UFS_PHY_AHB_CLK>, <&gcc GCC_UFS_PHY_UNIPRO_CORE_CLK>,
+				 <&rpmhcc RPMH_LN_BB_CLK3>, <&gcc GCC_UFS_PHY_TX_SYMBOL_0_CLK>,
+				 <&gcc GCC_UFS_PHY_RX_SYMBOL_0_CLK>, <&gcc GCC_UFS_PHY_RX_SYMBOL_1_CLK>;
+			clock-names = "core_clk", "bus_aggr_clk", "iface_clk", "core_clk_unipro",
+				      "ref_clk", "tx_lane0_sync_clk", "rx_lane0_sync_clk", "rx_lane1_sync_clk";
+			/*
+			 * M2582: pin the UFS clocks instead of allowing dynamic scaling.
+			 *
+			 * A non-zero min/max range here makes the UFS core register a
+			 * devfreq device, and ufs_devfreq_scale() then calls
+			 * clk_set_rate() -> clk_core_get() -> of_parse_clkspec() ->
+			 * of_property_match_string() every 60 ms. That path oopses on this
+			 * board in __pi_strcmp with x8 = 0101010101010101, i.e. a corrupted
+			 * device-node pointer, roughly two seconds into boot. Collapsing
+			 * each range to a single value keeps the property present (so the
+			 * probe still finds it) while making scaling impossible.
+			 *
+			 * Pin to the TOP of the original range, not the bottom: at 100 MHz
+			 * the link does not work at all and every descriptor query fails
+			 * with -EIO, so the UFS is unusable. 403 MHz is the maximum the
+			 * range allowed and keeps the link at full speed with no scaling.
+			 */
+			freq-table-hz = <403000000 403000000>, <0 0>, <0 0>, <403000000 403000000>,
+					<0 0>, <0 0>, <0 0>, <0 0>;
+			interconnects = <&aggre1_noc MASTER_UFS_MEM QCOM_ICC_TAG_ALWAYS &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
+					<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS &config_noc SLAVE_UFS_MEM_CFG QCOM_ICC_TAG_ALWAYS>;
+			interconnect-names = "ufs-ddr", "cpu-ufs";
+			power-domains = <&gcc GCC_UFS_PHY_GDSC>;
+			dma-coherent;
+			lanes-per-direction = <2>;
+			phys = <&ufsphy_mem>;
+			phy-names = "ufsphy";
+			resets = <&gcc GCC_UFS_PHY_BCR>;
+			reset-names = "rst";
+			reset-gpios = <&tlmm 191 GPIO_ACTIVE_LOW>;
+			#reset-cells = <1>;
+			status = "disabled";
+		};
+
+		tlmm: pinctrl@f000000 {
+			compatible = "qcom,tuna-tlmm";
+			reg = <0 0x0f000000 0 0x1000000>;
+			interrupts = <GIC_SPI 208 IRQ_TYPE_LEVEL_HIGH>;
+			gpio-controller;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			#address-cells = <0>;
+			gpio-ranges = <&tlmm 0 0 192>;
+			gpio-reserved-ranges = <4 4>, <54 1>, <82 2>;
+			wakeup-parent = <&pdc>;
+		};
+
+		intc: interrupt-controller@17100000 {
+			compatible = "arm,gic-v3";
+			reg = <0 0x17100000 0 0x10000>, <0 0x17180000 0 0x200000>;
+			interrupts = <GIC_PPI 9 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+			#redistributor-regions = <1>;
+			redistributor-stride = <0 0x40000>;
+		};
+
+		apps_rsc: rsc@17a00000 {
+			compatible = "qcom,rpmh-rsc";
+			reg = <0 0x17a00000 0 0x10000>, <0 0x17a10000 0 0x10000>, <0 0x17a20000 0 0x10000>;
+			reg-names = "drv-0", "drv-1", "drv-2";
+			interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>, <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>;
+			qcom,drv-id = <2>;
+			qcom,tcs-offset = <0xd00>;
+			qcom,tcs-config = <ACTIVE_TCS 3>, <SLEEP_TCS 2>, <WAKE_TCS 2>, <CONTROL_TCS 0>;
+			label = "apps_rsc";
+			apps_bcm_voter: bcm-voter { compatible = "qcom,bcm-voter"; };
+			rpmhcc: clock-controller {
+				compatible = "qcom,tuna-rpmh-clk";
+				clocks = <&xo_board>;
+				clock-names = "xo";
+				#clock-cells = <1>;
+			};
+			rpmhpd: power-controller {
+				compatible = "qcom,tuna-rpmhpd";
+				#power-domain-cells = <1>;
+				operating-points-v2 = <&rpmhpd_opp_table>;
+				rpmhpd_opp_table: opp-table {
+					compatible = "operating-points-v2";
+					rpmhpd_opp_low: opp-64 { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>; };
+					rpmhpd_opp_nom: opp-256 { opp-level = <RPMH_REGULATOR_LEVEL_NOM>; };
+				};
+			};
+		};
+
+		pdc: interrupt-controller@b220000 {
+			compatible = "qcom,tuna-pdc", "qcom,pdc";
+			reg = <0 0x0b220000 0 0x10000>, <0 0x174000f0 0 0x64>;
+			#interrupt-cells = <2>;
+			#address-cells = <0>;
+			interrupt-controller;
+			qcom,pdc-ranges = <0 480 8 8 719 1 9 718 1 10 230 1 11 724 1 12 716 1 13 727 1 14 720 1 15 726 1 16 721 1 17 262 1 18 70 1 19 723 1 20 234 1 22 725 1 23 231 1 24 504 14 40 520 6 51 531 4 58 538 2 61 541 4 67 547 27 94 609 31 125 63 1 126 366 2 128 374 1 129 378 1 130 428 1 131 434 2 133 437 1 134 452 2 136 458 2 138 464 11 149 671 1 150 688 1 151 714 2 153 722 1 154 255 1 155 269 2 157 276 1 158 287 1 159 306 4>;
+		};
+
+		apps_smmu: iommu@15000000 {
+			compatible = "qcom,tuna-smmu-500", "qcom,smmu-500", "arm,mmu-500";
+			reg = <0 0x15000000 0 0x100000>;
+			/*
+			 * The bootloader leaves this SMMU live and translating for
+			 * UFS. Rewriting its SMRs and context banks from the
+			 * non-secure kernel hangs the bus, so inherit its state.
+			 */
+			qcom,skip-reset;
+			#iommu-cells = <2>;
+			#global-interrupts = <1>;
+			dma-coherent;
+			interrupts = <GIC_SPI 65 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 97 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 98 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 99 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 100 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 101 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 102 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 103 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 104 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 105 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 106 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 107 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 108 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 109 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 110 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 111 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 112 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 113 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 114 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 115 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 116 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 117 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 118 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 181 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 184 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 185 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 187 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 189 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 190 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 191 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 192 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 315 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 316 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 317 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 318 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 319 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 320 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 321 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 322 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 323 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 324 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 325 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 326 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 327 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 328 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 329 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 330 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 331 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 332 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 333 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 334 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 335 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 336 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 337 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 338 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 339 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 340 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 341 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 342 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 343 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 344 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 395 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 396 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 397 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 398 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 399 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 400 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 401 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 402 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 403 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 404 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 405 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 406 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 407 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 408 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 409 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 418 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 419 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 412 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 421 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 707 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 423 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 424 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 425 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 690 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 691 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 692 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 693 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 694 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 695 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 696 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 697 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 410 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 488 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 489 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 490 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 491 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 492 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 493 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 494 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 495 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 496 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 497 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 498 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 499 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 500 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 501 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 502 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		clk_virt: interconnect-clk-virt {
+			compatible = "qcom,tuna-clk-virt";
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		mc_virt: interconnect-mc-virt {
+			compatible = "qcom,tuna-mc-virt";
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		config_noc: interconnect@1600000 {
+			compatible = "qcom,tuna-cnoc-cfg";
+			reg = <0 0x1600000 0 0x9200>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		cnoc_main: interconnect@1500000 {
+			compatible = "qcom,tuna-cnoc-main";
+			reg = <0 0x1500000 0 0x16080>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		system_noc: interconnect@1680000 {
+			compatible = "qcom,tuna-system-noc";
+			reg = <0 0x1680000 0 0x1d080>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		aggre1_noc: interconnect@16e0000 {
+			compatible = "qcom,tuna-aggre1-noc";
+			reg = <0 0x16e0000 0 0x16400>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		/*
+		 * AGGRE2 and MMSS NoCs sit in power-collapsed domains. Touching
+		 * their registers on an unpowered domain stalls the AXI bus, and
+		 * nothing in this bring-up DT consumes them (the display path,
+		 * the only MMSS user, is not brought up yet).
+		 */
+		aggre2_noc: interconnect@1700000 {
+			compatible = "qcom,tuna-aggre2-noc";
+			reg = <0 0x1700000 0 0x1f400>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+			status = "disabled";
+		};
+
+		mmss_noc: interconnect@1780000 {
+			compatible = "qcom,tuna-mmss-noc";
+			reg = <0 0x1780000 0 0x7d800>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+			status = "disabled";
+		};
+
+		gem_noc: interconnect@24100000 {
+			compatible = "qcom,tuna-gem-noc";
+			reg = <0 0x24100000 0 0x14d080>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+	};
+};
