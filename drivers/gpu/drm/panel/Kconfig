@@ -1349,3 +1349,10 @@ config DRM_PANEL_XINPENG_XPP055C272
 	  XPP055C272 controller for 720x1280 LCD panels with MIPI/RGB/SPI
 	  system interfaces.
 endmenu
+
+config DRM_PANEL_MEIZU_M2582
+	tristate "Meizu M2582 VTDR6130A AMOLED panel"
+	depends on OF && DRM_MIPI_DSI && BACKLIGHT_CLASS_DEVICE
+	select DRM_DISPLAY_DSC_HELPER
+	help
+	  Experimental 1200x2670 command-mode DSC panel used by the Meizu 22.
