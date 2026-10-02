@@ -3046,7 +3046,7 @@ static int gcc_tuna_probe(struct platform_device *pdev)
 
 		regmap_read(regmap, 0x50018, &usb3phy);
 		regmap_read(regmap, 0x39004, &usb30);
-		dev_info(&pdev->dev,
+		dev_dbg(&pdev->dev,
 			 "M2582: GDSC hw usb3_phy=0x%08x usb30_prim=0x%08x (SW_COLLAPSE bit0: %u/%u)\n",
 			 usb3phy, usb30, usb3phy & 1, usb30 & 1);
 	}
@@ -3056,14 +3056,14 @@ static int gcc_tuna_probe(struct platform_device *pdev)
 
 		regmap_read(regmap, 0x39070, &mux);
 		regmap_read(regmap, 0x3906c, &gate);
-		dev_info(&pdev->dev,
+		dev_dbg(&pdev->dev,
 			 "M2582: usb3 pipe mux=0x%08x (sel=%u) gate=0x%08x\n",
 			 mux, mux & 0x3, gate);
 
 		regmap_update_bits(regmap, 0x39070, 0x3, 0);
 
 		regmap_read(regmap, 0x39070, &mux);
-		dev_info(&pdev->dev,
+		dev_dbg(&pdev->dev,
 			 "M2582: usb3 pipe mux forced to wrapper, now=0x%08x (sel=%u)\n",
 			 mux, mux & 0x3);
 	}

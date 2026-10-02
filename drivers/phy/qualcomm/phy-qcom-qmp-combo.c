@@ -4074,7 +4074,7 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		 force, qmp->init_count, qmp->num_clks, cfg->num_vregs);
 	ret = regulator_bulk_enable(cfg->num_vregs, qmp->vregs);
 	if (ret) {
-		dev_err(qmp->dev, "M2582: regulator_bulk_enable FAILED err=%d\n", ret);
+		dev_dbg(qmp->dev, "M2582: regulator_bulk_enable FAILED err=%d\n", ret);
 		dev_err(qmp->dev, "failed to enable regulators, err=%d\n", ret);
 		goto err_decrement_count;
 	}
@@ -4098,22 +4098,22 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 				int vret = regulator_set_voltage(qmp->vregs[ri].consumer,
 								 vdd[1], vdd[2]);
 				if (vret)
-					dev_err(qmp->dev, "M2582: set_voltage[%d] %d\n", ri, vret);
+					dev_dbg(qmp->dev, "M2582: set_voltage[%d] %d\n", ri, vret);
 			}
-			dev_info(qmp->dev, "M2582: vdd voltage %u..%u uV\n", vdd[1], vdd[2]);
+			dev_dbg(qmp->dev, "M2582: vdd voltage %u..%u uV\n", vdd[1], vdd[2]);
 		}
 		if (!of_property_read_u32_array(np, "qcom,core-voltage-level", core, 3))
-			dev_info(qmp->dev, "M2582: core voltage %u..%u uV\n", core[1], core[2]);
+			dev_dbg(qmp->dev, "M2582: core voltage %u..%u uV\n", core[1], core[2]);
 		if (!of_property_read_u32(np, "qcom,vdd-max-load-uA", &load)) {
 			for (ri = 0; ri < cfg->num_vregs; ri++) {
 				int lret = regulator_set_load(qmp->vregs[ri].consumer, load);
 				if (lret)
-					dev_err(qmp->dev, "M2582: set_load[%d] %d\n", ri, lret);
+					dev_dbg(qmp->dev, "M2582: set_load[%d] %d\n", ri, lret);
 			}
-			dev_info(qmp->dev, "M2582: vdd load %u uA\n", load);
+			dev_dbg(qmp->dev, "M2582: vdd load %u uA\n", load);
 		}
 	}
-	dev_info(qmp->dev, "M2582: com_init regulators ok\n");
+	dev_dbg(qmp->dev, "M2582: com_init regulators ok\n");
 
 	/*
 	 * M2582: do not assert the PHY resets, only release them.
@@ -4233,10 +4233,10 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		int ci;
 
 		for (ci = 0; ci < qmp->num_clks; ci++)
-			dev_err(qmp->dev, "M2582: phy clk[%d] %-8s rate=%lu\n",
+			dev_dbg(qmp->dev, "M2582: phy clk[%d] %-8s rate=%lu\n",
 				ci, qmp->clks[ci].id,
 				qmp->clks[ci].clk ? clk_get_rate(qmp->clks[ci].clk) : 0);
-		dev_err(qmp->dev, "M2582: phy pipe_clk rate=%lu\n",
+		dev_dbg(qmp->dev, "M2582: phy pipe_clk rate=%lu\n",
 			qmp->pipe_clk ? clk_get_rate(qmp->pipe_clk) : 0);
 	}
 
@@ -4292,14 +4292,14 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 				u32 before = readl(tcsr + refs[ri].off);
 
 				writel(before | BIT(0), tcsr + refs[ri].off);
-				dev_info(qmp->dev,
+				dev_dbg(qmp->dev,
 					 "M2582: TCSR %s clkref 0x%02x: before=%08x after=%08x\n",
 					 refs[ri].name, refs[ri].off, before,
 					 readl(tcsr + refs[ri].off));
 			}
 			iounmap(tcsr);
 		} else {
-			dev_err(qmp->dev, "M2582: TCSR ioremap failed\n");
+			dev_dbg(qmp->dev, "M2582: TCSR ioremap failed\n");
 		}
 	}
 
@@ -4686,11 +4686,11 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 		 * unanswered), i.e. touching those windows stalls the interconnect.
 		 * PCS_STATUS is the one that says why the wait failed.
 		 */
-		dev_err(qmp->dev, "M2582: PCS_STATUS off=0x%x val=0x%08x (PHYSTATUS=BIT(6)=%d)\n",
+		dev_dbg(qmp->dev, "M2582: PCS_STATUS off=0x%x val=0x%08x (PHYSTATUS=BIT(6)=%d)\n",
 			cfg->regs[QPHY_PCS_STATUS], readl(status),
 			!!(readl(status) & PHYSTATUS));
 		/* Are all four control registers garbage, or only this one? */
-		dev_err(qmp->dev, "M2582: pcs 00=%08x 14=%08x 40=%08x 44=%08x\n",
+		dev_dbg(qmp->dev, "M2582: pcs 00=%08x 14=%08x 40=%08x 44=%08x\n",
 			readl(qmp->pcs + 0x00), readl(qmp->pcs + 0x14),
 			readl(qmp->pcs + 0x40), readl(qmp->pcs + 0x44));
 		/*
@@ -4702,7 +4702,7 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 		 * replication) inside dwc3_otg_sm_work -> of_get_next_available_child.
 		 * Reads only from here on.
 		 */
-		dev_err(qmp->dev, "M2582: pcs 08=%08x 0c=%08x 10=%08x 18=%08x 1c=%08x\n",
+		dev_dbg(qmp->dev, "M2582: pcs 08=%08x 0c=%08x 10=%08x 18=%08x 1c=%08x\n",
 			readl(qmp->pcs + 0x08), readl(qmp->pcs + 0x0c),
 			readl(qmp->pcs + 0x10), readl(qmp->pcs + 0x18),
 			readl(qmp->pcs + 0x1c));
@@ -4713,7 +4713,7 @@ static int qmp_combo_usb_power_on(struct phy *phy)
 		 * COM/SERDES stalled the bus. Read exactly one register from each of
 		 * the three windows, once, and no writes.
 		 */
-		dev_err(qmp->dev, "M2582: window probe serdes+0x00=%08x com+0x00=%08x pcs+0x00=%08x\n",
+		dev_dbg(qmp->dev, "M2582: window probe serdes+0x00=%08x com+0x00=%08x pcs+0x00=%08x\n",
 			readl(qmp->serdes + 0x00), readl(qmp->com + 0x00),
 			readl(qmp->pcs + 0x00));
 		goto err_disable_pipe_clk;
@@ -4764,7 +4764,7 @@ static int qmp_combo_usb_init(struct phy *phy)
 	struct qmp_combo *qmp = phy_get_drvdata(phy);
 	int ret;
 
-	dev_info(qmp->dev, "M2582: qmp_combo_usb_init ENTER\n");
+	dev_dbg(qmp->dev, "M2582: qmp_combo_usb_init ENTER\n");
 
 	mutex_lock(&qmp->phy_mutex);
 	ret = qmp_combo_com_init(qmp, false);
@@ -5615,12 +5615,12 @@ static int qmp_combo_parse_dt(struct qmp_combo *qmp)
 		long r = clk_round_rate(qmp->pipe_clk, ULONG_MAX);
 		int rc;
 
-		dev_info(dev, "M2582: pipe_clk before cur=%lu round=%ld en=%d\n",
+		dev_dbg(dev, "M2582: pipe_clk before cur=%lu round=%ld en=%d\n",
 			 cur, r, __clk_is_enabled(qmp->pipe_clk));
 
 		if (r > 0 && (unsigned long)r != cur) {
 			rc = clk_set_rate(qmp->pipe_clk, (unsigned long)r);
-			dev_info(dev, "M2582: pipe_clk set_rate(%ld) rc=%d now=%lu\n",
+			dev_dbg(dev, "M2582: pipe_clk set_rate(%ld) rc=%d now=%lu\n",
 				 r, rc, clk_get_rate(qmp->pipe_clk));
 		}
 
@@ -5631,7 +5631,7 @@ static int qmp_combo_parse_dt(struct qmp_combo *qmp)
 		 * current=0 round=-EINVAL, i.e. never enabled.
 		 */
 		rc = clk_prepare_enable(qmp->pipe_clk);
-		dev_info(dev, "M2582: pipe_clk prepare_enable rc=%d now=%lu en=%d\n",
+		dev_dbg(dev, "M2582: pipe_clk prepare_enable rc=%d now=%lu en=%d\n",
 			 rc, clk_get_rate(qmp->pipe_clk),
 			 __clk_is_enabled(qmp->pipe_clk));
 	}
@@ -5820,7 +5820,7 @@ static int qmp_combo_probe(struct platform_device *pdev)
 			dev_warn(dev, "unable to determine orientation & mode from data-lanes");
 		}
 
-		dev_info(dev, "M2582: phy mode=%d orientation=%d (dp_ort=%d usb3_ort=%d)\n",
+		dev_dbg(dev, "M2582: phy mode=%d orientation=%d (dp_ort=%d usb3_ort=%d)\n",
 			 qmp->qmpphy_mode, qmp->orientation,
 			 dp_orientation, usb3_orientation);
 	}

@@ -2904,7 +2904,7 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	 *
 	 * exactly as observed, with the gadget bound and the link at high speed.
 	 */
-	dev_info(dwc->dev,
+	dev_dbg(dwc->dev,
 		 "M2582: pullup(%d) ret=%d DCTL=%08x DEVTEN=%08x DSTS=%08x softconnect=%d\n",
 		 is_on, ret, dwc3_readl(dwc->regs, DWC3_DCTL),
 		 dwc3_readl(dwc->regs, DWC3_DEVTEN),
@@ -3971,7 +3971,7 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 			const u32 *w = (const u32 *)event;
 
 			m2582_epev_log++;
-			dev_info(dwc->dev,
+			dev_dbg(dwc->dev,
 				 "M2582: epev[%02d] raw=%08x num=%u type=%u status=%u "
 				 "alt_num=%u alt_type=%u dep=%s\n",
 				 m2582_epev_log, *w, epnum, event->endpoint_event,
@@ -3996,7 +3996,7 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 
 			if (m2582_drop_log < 6) {
 				m2582_drop_log++;
-				dev_info(dwc->dev,
+				dev_dbg(dwc->dev,
 					 "M2582: epev DROPPED epnum=%u type=%u (not enabled)\n",
 					 epnum, event->endpoint_event);
 			}
@@ -4301,7 +4301,7 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	u8			lanes = 1;
 	u8			speed;
 
-	dev_info(dwc->dev,
+	dev_dbg(dwc->dev,
 		 "M2582: conndone softconnect=%d dsts=%08x dctl=%08x devten=%08x ep0flags=%08x speed=%d "
 		 "gctl=%08x dcfg=%08x gusb2phycfg0=%08x gusb3pipectl0=%08x\n",
 		 dwc->softconnect,
@@ -4449,7 +4449,7 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		dev_err(dwc->dev, "failed to enable %s\n", dep->name);
 		return;
 	}
-	dev_info(dwc->dev, "M2582: ep0 enabled, resource_index=%u\n",
+	dev_dbg(dwc->dev, "M2582: ep0 enabled, resource_index=%u\n",
 		 dep->resource_index);
 
 	dep = dwc->eps[1];
@@ -4458,7 +4458,7 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		dev_err(dwc->dev, "failed to enable %s\n", dep->name);
 		return;
 	}
-	dev_info(dwc->dev, "M2582: ep1 enabled, resource_index=%u\n",
+	dev_dbg(dwc->dev, "M2582: ep1 enabled, resource_index=%u\n",
 		 dep->resource_index);
 
 	/*
@@ -4495,11 +4495,11 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		if (susp & DWC3_GUSB3PIPECTL_SUSPHY) {
 			dwc3_writel(dwc->regs, DWC3_GUSB3PIPECTL(0),
 				    susp & ~DWC3_GUSB3PIPECTL_SUSPHY);
-			dev_info(dwc->dev,
+			dev_dbg(dwc->dev,
 				 "M2582: conndone SUSPHY cleared %08x -> %08x\n",
 				 susp, dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0)));
 		} else {
-			dev_info(dwc->dev, "M2582: conndone SUSPHY already clear (%08x)\n",
+			dev_dbg(dwc->dev, "M2582: conndone SUSPHY already clear (%08x)\n",
 				 susp);
 		}
 	}
@@ -4564,7 +4564,7 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 
 		ecmd |= DWC3_DEPCMD_PARAM(dwc->eps[0]->resource_index);
 		eret = dwc3_send_gadget_ep_cmd(dwc->eps[0], ecmd, &p);
-		dev_info(dwc->dev, "M2582: ep0 forced ENDTRANSFER -> %d\n", eret);
+		dev_dbg(dwc->dev, "M2582: ep0 forced ENDTRANSFER -> %d\n", eret);
 
 		/*
 		 * Use stall-and-restart rather than a bare out_start: the first

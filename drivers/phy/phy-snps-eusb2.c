@@ -308,7 +308,7 @@ void m2582_eusb2_notify_connect(struct phy *p)
 	m2582_apb_write(phy, 0x5, 0xc0);
 	m2582_apb_write(phy, 0x5, 0x00);
 
-	dev_info(&p->dev,
+	dev_dbg(&p->dev,
 		 "M2582: connect-time APB tuning done -> 130=%08x 134=%08x 138=%08x 13c=%08x\n",
 		 readl_relaxed(phy->base + 0x130), readl_relaxed(phy->base + 0x134),
 		 readl_relaxed(phy->base + 0x138), readl_relaxed(phy->base + 0x13c));
@@ -525,9 +525,9 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		 */
 		if (phy->eud_enable) {
 			writel_relaxed(1, phy->eud_enable);
-			dev_info(&p->dev, "M2582: eud_enable written (region 1 mapped)\n");
+			dev_dbg(&p->dev, "M2582: eud_enable written (region 1 mapped)\n");
 		} else {
-			dev_warn(&p->dev, "M2582: no eud_enable region mapped\n");
+			dev_dbg(&p->dev, "M2582: no eud_enable region mapped\n");
 		}
 
 		/*
@@ -650,7 +650,7 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		r = readl_relaxed(phy->base + 0x78) & ~0xc0;
 		writel_relaxed(r, phy->base + 0x78);
 
-		dev_info(&p->dev,
+		dev_dbg(&p->dev,
 			 "M2582: vendor sequence replayed -> 40=%08x 44=%08x 50=%08x 54=%08x 58=%08x 5c=%08x 60=%08x 14=%08x\n",
 			 readl_relaxed(phy->base + 0x40), readl_relaxed(phy->base + 0x44),
 			 readl_relaxed(phy->base + 0x50), readl_relaxed(phy->base + 0x54),
@@ -803,7 +803,7 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 
 			m2582_write_byte_rep(phy->base, 0x5c, 0xc8);
 		} else {
-			dev_warn(&p->dev, "M2582: unexpected ref rate %lu\n", rate);
+			dev_dbg(&p->dev, "M2582: unexpected ref rate %lu\n", rate);
 		}
 
 		m2582_write_byte_rep(phy->base, 0x60,
@@ -853,7 +853,7 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		r = readl_relaxed(phy->base + 0x64) & ~0x2;
 		writel_relaxed(r, phy->base + 0x64);
 
-		dev_info(&p->dev,
+		dev_dbg(&p->dev,
 			 "M2582: vendor datapath tune at %lu Hz -> 54=%08x 58=%08x 5c=%08x 60=%08x 64=%08x 6c=%08x 78=%08x 7c=%08x\n",
 			 rate,
 			 readl_relaxed(phy->base + 0x54),
@@ -981,13 +981,13 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		dev_dbg(&p->dev,
 			 "M2582: eusb2 PLL lock: 0x14=%08x locked=%d after %d polls\n",
 			 st, !!(st & BIT(6)), i);
-		dev_info(&p->dev,
+		dev_dbg(&p->dev,
 			 "M2582: eusb2 post-init 00=%08x 04=%08x 08=%08x 0c=%08x 10=%08x 14=%08x 18=%08x\n",
 			 readl_relaxed(phy->base + 0x00), readl_relaxed(phy->base + 0x04),
 			 readl_relaxed(phy->base + 0x08), readl_relaxed(phy->base + 0x0c),
 			 readl_relaxed(phy->base + 0x10), readl_relaxed(phy->base + 0x14),
 			 readl_relaxed(phy->base + 0x18));
-		dev_info(&p->dev,
+		dev_dbg(&p->dev,
 			 "M2582: eusb2 post-init 40=%08x 44=%08x 48=%08x 4c=%08x 50=%08x 54=%08x 58=%08x 5c=%08x 60=%08x\n",
 			 readl_relaxed(phy->base + 0x40), readl_relaxed(phy->base + 0x44),
 			 readl_relaxed(phy->base + 0x48), readl_relaxed(phy->base + 0x4c),
@@ -1012,7 +1012,7 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 
 		writel_relaxed(before | 0x9, phy->base + 0x54);
 		after = readl_relaxed(phy->base + 0x54);
-		dev_info(&p->dev,
+		dev_dbg(&p->dev,
 			 "M2582: eusb2 0x54 re-enable: before=%08x after=%08x (want bit0|bit3)\n",
 			 before, after);
 	}
@@ -1021,7 +1021,7 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 	for (i = 0; i + 1 < phy->param_override_seq_cnt; i += 2) {
 		writel_relaxed(phy->param_override_seq[i],
 			       phy->base + phy->param_override_seq[i + 1]);
-		dev_info(&p->dev, "M2582: param override %08x -> +0x%x\n",
+		dev_dbg(&p->dev, "M2582: param override %08x -> +0x%x\n",
 			 phy->param_override_seq[i],
 			 phy->param_override_seq[i + 1]);
 	}
@@ -1078,7 +1078,7 @@ static int snps_eusb2_hsphy_init(struct phy *p)
 			u32 before = readl_relaxed(tcsr + 0x04);
 
 			writel_relaxed(before | BIT(0), tcsr + 0x04);
-			dev_info(&p->dev,
+			dev_dbg(&p->dev,
 				 "M2582: TCSR usb2 clkref 0x04: before=%08x after=%08x\n",
 				 before, readl_relaxed(tcsr + 0x04));
 			iounmap(tcsr);
@@ -1094,21 +1094,21 @@ static int snps_eusb2_hsphy_init(struct phy *p)
 	 * All this does is make the state visible in the report.
 	 */
 	if (phy->vdd_refgen)
-		dev_info(&p->dev, "M2582: vdd_refgen present, %d uV, is_enabled=%d\n",
+		dev_dbg(&p->dev, "M2582: vdd_refgen present, %d uV, is_enabled=%d\n",
 			 regulator_get_voltage(phy->vdd_refgen),
 			 regulator_is_enabled(phy->vdd_refgen));
 	else
-		dev_warn(&p->dev, "M2582: no vdd_refgen supply in the device tree\n");
+		dev_dbg(&p->dev, "M2582: no vdd_refgen supply in the device tree\n");
 
 	/* M2582: is the companion repeater actually present and initialised? */
-	dev_info(&p->dev, "M2582: eusb2 init, repeater=%px\n", phy->repeater);
+	dev_dbg(&p->dev, "M2582: eusb2 init, repeater=%px\n", phy->repeater);
 
 	ret = phy_init(phy->repeater);
 	if (ret) {
 		dev_err(&p->dev, "repeater init failed: %d\n", ret);
 		goto disable_vreg;
 	}
-	dev_info(&p->dev, "M2582: eusb2 repeater init ok\n");
+	dev_dbg(&p->dev, "M2582: eusb2 repeater init ok\n");
 
 	ret = clk_bulk_prepare_enable(phy->data->num_clks, phy->clks);
 	if (ret) {

@@ -681,11 +681,11 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	ignore_pipe_clk = device_property_read_bool(dev,
 				"qcom,select-utmi-as-pipe-clk");
 	if (ignore_pipe_clk) {
-		dev_info(dev, "M2582USB: qscratch=%px general_cfg before=%08x\n",
+		dev_dbg(dev, "M2582USB: qscratch=%px general_cfg before=%08x\n",
 			 (void __force *)qcom->qscratch_base,
 			 readl(qcom->qscratch_base + QSCRATCH_GENERAL_CFG));
 		dwc3_qcom_select_utmi_clk(qcom);
-		dev_info(dev, "M2582USB: general_cfg after=%08x hs_phy_ctrl=%08x ss_phy_ctrl=%08x\n",
+		dev_dbg(dev, "M2582USB: general_cfg after=%08x hs_phy_ctrl=%08x ss_phy_ctrl=%08x\n",
 			 readl(qcom->qscratch_base + QSCRATCH_GENERAL_CFG),
 			 readl(qcom->qscratch_base + QSCRATCH_HS_PHY_CTRL),
 			 readl(qcom->qscratch_base + QSCRATCH_SS_PHY_CTRL));

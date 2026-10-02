@@ -82,7 +82,7 @@ static int dwc3_ep0_start_trans(struct dwc3_ep *dep)
 		 *
 		 * Log it, then clear the stale flag and queue the TRB for real.
 		 */
-		dev_info(dep->dwc->dev,
+		dev_dbg(dep->dwc->dev,
 			 "M2582: ep0 start_trans stale flag, ep0state=%d trb_enq=%u trb_deq=%u\n",
 			 dep->dwc->ep0state, dep->trb_enqueue, dep->trb_dequeue);
 		dep->flags &= ~DWC3_EP_TRANSFER_STARTED;
