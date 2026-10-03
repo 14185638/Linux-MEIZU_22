@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Meizu 22 (M2582) -- PMXR2230 over-temperature protection.
+ *
+ * This is the one heat limit that does not depend on anything we could not
+ * read. The PMXR2230 is the PMIC that supplies the CPU rails, and it watches
+ * its own die temperature in hardware: stage 2 and stage 3 shutdown are armed
+ * by default, so if the die crosses its threshold the PMIC shuts the board
+ * down on its own, with Linux out of the loop entirely.
+ *
+ * What that buys: the CPU sits right next to this PMIC and shares its heat
+ * island, so CPU load shows up here. Measured on this board, eight busy
+ * threads for 90 s took the PMXR2230 die from 39 C to 72 C. It is a lagging
+ * signal rather than the CPU's own junction temperature, which is exactly why
+ * the factory design does not rely on it alone either -- but it is a real
+ * hardware limit, and it is the only one available to us.
+ *
+ * What it deliberately does not do: no software throttling. TSENS would be
+ * the sensor for that, and its calibration lives in efuse that the non-secure
+ * world cannot reach -- the direct read resets the board and the secure call
+ * is refused. Without a trustworthy CPU temperature there is nothing to
+ * throttle against, and throttling on the wrong number is worse than not
+ * throttling at all. The goal here is narrow and it is met: do not let the
+ * silicon cook.
+ *
+ * Trip points are the values the factory tree uses for this PMIC
+ * (pmxr2230_tz: 95 C passive, 115 C hot, 145 C critical) and they match the
+ * binding's own example for this family. They are thresholds inside the PMIC,
+ * not policy knobs: the hardware stage limits are what actually shut the board
+ * down, and the driver only ever lowers them, never raises them.
+ */
+&spmi_bus {
+	pmxr2230: pmic@1 {
+		compatible = "qcom,pmxr2230", "qcom,spmi-pmic";
+		reg = <0x1 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmxr2230_temp_alarm: temp-alarm@a00 {
+			compatible = "qcom,spmi-temp-alarm";
+			reg = <0xa00>;
+			interrupts = <0x1 0xa 0x0 IRQ_TYPE_EDGE_BOTH>;
+			#thermal-sensor-cells = <0>;
+		};
+	};
+};
+
+/ {
+	thermal-zones {
+		pmxr2230-thermal {
+			polling-delay-passive = <100>;
+
+			thermal-sensors = <&pmxr2230_temp_alarm>;
+
+			trips {
+				pmxr2230_trip0: trip0 {
+					temperature = <95000>;
+					hysteresis = <0>;
+					type = "passive";
+				};
+
+				pmxr2230_trip1: trip1 {
+					temperature = <115000>;
+					hysteresis = <0>;
+					type = "hot";
+				};
+
+				pmxr2230_trip2: trip2 {
+					temperature = <145000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+	};
+};

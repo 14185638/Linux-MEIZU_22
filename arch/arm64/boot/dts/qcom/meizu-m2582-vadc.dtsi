@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Meizu 22 (M2582) -- PMK8550 voltage ADC.
+ *
+ * The PMK8550's ADC is not a dedicated peripheral: it lives in the PMIC's SDAM
+ * blocks on the SPMI bus, which is why "reg" holds two SDAM addresses and the
+ * bindings talk about SDAM0/SDAM1. Both base addresses and both end-of-
+ * conversion interrupts are taken from the factory device tree for this board.
+ *
+ * Channel numbering follows the binding: reg is a virtual channel number,
+ * sid << 8 | channel, so 0x8e is channel 0x8e on SDAM1 and 0x103 is channel
+ * 0x03 on SDAM1.
+ *
+ * The channel numbers are written as literals rather than as the ADC5_GEN3_*
+ * macros: those live in include/linux/iio/adc/qcom-adc5-gen3-common.h,
+ * a kernel header no devicetree can include, and there is no
+ * dt-bindings header for them yet.
+ *
+ * Only channels the mainline driver actually declares are listed here. Its
+ * table (adc5_gen3_chans_pmic in drivers/iio/adc/qcom-spmi-adc5-gen3.c) covers
+ * the reference channels, die temperature and VPH_PWR -- and nothing else.
+ * The factory tree also describes a dozen board thermistors (pmxr2230_cp_therm
+ * and friends), but those use channel numbers the mainline table has no entry
+ * for, and the driver rejects an unknown channel outright at probe. Adding them
+ * means teaching the driver their scaling, which is its own piece of work;
+ * listing them here first would only make the whole ADC fail to probe.
+ *
+ * VPH_PWR is the interesting one: it is the board input voltage, which is the
+ * battery voltage, and it is the only power-related quantity mainline can read
+ * on this board. There is no battery current channel on this ADC at all.
+ */
+&pmk8550 {
+	pmk8550_vadc: adc@9000 {
+		compatible = "qcom,spmi-adc5-gen3";
+		reg = <0x9000>, <0x9100>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		#io-channel-cells = <1>;
+		#thermal-sensor-cells = <1>;
+
+		/*
+		 * These go to the PMIC's own interrupt controller, not the GIC,
+		 * which is why they carry four cells: SID, interrupt number, the
+		 * PMIC's interrupt type, and the edge/level flag.
+		 */
+		interrupts = <0x0 0x90 0x1 IRQ_TYPE_EDGE_RISING>,
+			     <0x0 0x91 0x1 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "adc-sdam0", "adc-sdam1";
+
+		/* SDAM0 */
+		channel@0 {
+			reg = <0x00>;		/* REF_GND */
+			label = "pmk8550_offset_ref";
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@1 {
+			reg = <0x01>;		/* 1P25VREF */
+			label = "pmk8550_vref_1p25";
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@3 {
+			reg = <0x03>;		/* DIE_TEMP, SDAM0 */
+			label = "pmk8550_die_temp";
+			qcom,pre-scaling = <1 1>;
+		};
+
+		/* SDAM1 */
+		channel@103 {
+			reg = <0x103>;		/* DIE_TEMP, SDAM1 */
+			label = "pmxr2230_die_temp";
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@18e {
+			reg = <0x18e>;		/* VPH_PWR, SDAM1 */
+			label = "pmxr2230_vph_pwr";
+			qcom,pre-scaling = <1 3>;
+		};
+
+		/*
+		 * Board thermistors. These are NTC resistors placed on the board next
+		 * to the parts that get hot, read through the PMIC's 100 kOhm pull-up;
+		 * the resistance ratio gives the temperature without any per-chip
+		 * calibration, which is why they work here when TSENS does not.
+		 *
+		 * reg is a virtual channel number: sid << 8 | channel. All of these
+		 * sit on SDAM1 (sid 1), and their low byte lands on channel numbers the
+		 * mainline driver already declares -- 0x44..0x49 are the six AMUX
+		 * thermal inputs, 0x4a..0x4d the four that can be routed to a GPIO.
+		 * The factory tree used the same channel numbers, so this is a direct
+		 * port rather than a guess.
+		 *
+		 * qcom,ratiometric is how the factory tree marks them and it is the
+		 * right calibration for a pull-up divider: it compares against the
+		 * reference channel rather than an absolute full-scale value, so it
+		 * cancels the PMIC's own reference error.
+		 *
+		 * cp_therm is the interesting one -- it sits by the CPU supply. It
+		 * reads board temperature rather than junction temperature, so it lags
+		 * the die, which is the right bias for a passive trip: too late to
+		 * throttle is recoverable, too eager is not.
+		 */
+		channel@144 {
+			reg = <0x144>;		/* AMUX1_THM_100K_PU */
+			label = "pmxr2230_sys_therm_2";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@145 {
+			reg = <0x145>;		/* AMUX2_THM_100K_PU */
+			label = "pmxr2230_sys_therm_5";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@146 {
+			reg = <0x146>;		/* AMUX3_THM_100K_PU */
+			label = "pmxr2230_sys_therm_4";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@147 {
+			reg = <0x147>;		/* AMUX4_THM_100K_PU */
+			label = "pmxr2230_sys_therm_3";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@148 {
+			reg = <0x148>;		/* AMUX5_THM_100K_PU */
+			label = "pmxr2230_sys_therm_11";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@14a {
+			reg = <0x14a>;		/* AMUX1_GPIO_100K_PU -- CPU supply area */
+			label = "pmxr2230_cp_therm";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@14b {
+			reg = <0x14b>;		/* AMUX2_GPIO_100K_PU */
+			label = "pmk8550_sys_therm_0";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@14c {
+			reg = <0x14c>;		/* AMUX3_GPIO_100K_PU */
+			label = "pmxr2230_sys_therm_6";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+
+		channel@14d {
+			reg = <0x14d>;		/* AMUX4_GPIO_100K_PU -- crystal area */
+			label = "pmxr2230_xo_therm";
+			qcom,ratiometric;
+			qcom,hw-settle-time = <200>;
+			qcom,pre-scaling = <1 1>;
+		};
+	};
+};

@@ -18,6 +18,8 @@
  * so this deliberately stays clear of the RPMh path that hangs this board.
  */
 #include "pmk8550.dtsi"
+/* 需要 &pmk8550 标签，必须放在 pmk8550.dtsi 之后 */
+#include "meizu-m2582-vadc.dtsi"
 /*
  * The rest of the PMIC complex that this board actually carries.
  *
@@ -42,6 +44,8 @@
  * declared alongside them to be worth much.
  */
 #include "sm8750-pmics.dtsi"
+/* 需要 &spmi_bus 标签，必须放在 sm8750-pmics.dtsi 之后 */
+#include "meizu-m2582-thermal.dtsi"
 
 / {
 	model = "Meizu 22 (M2582) — experimental Linux bring-up";

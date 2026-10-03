@@ -43,6 +43,12 @@
 		vreg_ldob2: ldo2  { regulator-name = "ldob2";  regulator-min-microvolt = <880000>;  regulator-max-microvolt = <925000>;  regulator-always-on; };
 		vreg_ldob3: ldo3  { regulator-name = "ldob3";  regulator-min-microvolt = <880000>;  regulator-max-microvolt = <950000>;  regulator-always-on; };
 		vreg_ldob4: ldo4  { regulator-name = "ldob4";  regulator-min-microvolt = <1200000>; regulator-max-microvolt = <1200000>; regulator-always-on; };
+		/*
+		 * At the bootloader's value on purpose, so registration writes nothing
+		 * (the core skips a write when the target is already satisfied) and the
+		 * runtime path can be exercised on its own. See the test hook at the
+		 * bottom of qcom-rpmh-regulator.c.
+		 */
 		vreg_ldob5: ldo5  { regulator-name = "ldob5";  regulator-min-microvolt = <1200000>; regulator-max-microvolt = <1200000>; regulator-always-on; };
 		vreg_ldob7: ldo7  { regulator-name = "ldob7";  regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
 		vreg_ldob8: ldo8  { regulator-name = "ldob8";  regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };

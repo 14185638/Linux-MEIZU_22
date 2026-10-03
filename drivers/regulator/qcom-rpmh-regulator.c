@@ -217,6 +217,21 @@ static int _rpmh_regulator_vrm_set_voltage_sel(struct regulator_dev *rdev,
 	};
 	int ret;
 
+	/*
+	 * Promise the controller a response for this command, which is what
+	 * CMD_WAIT_FOR_CMPL tracks. Every other RPMh regulator driver sets it --
+	 * the vendor's rpmh-regulator.c does cmd[j].wait = true on each command
+	 * it sends, as does the private qcom-tuna-boot-regulator that used to
+	 * serve these rails -- and rpmh_write() above is already documented as
+	 * always waiting, so leaving it clear made the two disagree.
+	 *
+	 * This was tried as a fix for the board resetting whenever a rail is
+	 * asked for a voltage it is not already at. It did not fix that: the
+	 * reset still happens, which rules this out as the cause. It is kept
+	 * because the disagreement is real regardless.
+	 */
+	cmd.wait = true;
+
 	/* VRM voltage control register is set with voltage in millivolts. */
 	cmd.data = DIV_ROUND_UP(regulator_list_voltage_linear_range(rdev,
 							selector), 1000);
@@ -270,6 +285,9 @@ static int rpmh_regulator_set_enable_state(struct regulator_dev *rdev,
 	};
 	int ret;
 
+	/* See _rpmh_regulator_vrm_set_voltage_sel(); this does not fix the reset. */
+	cmd.wait = true;
+
 	if (vreg->enabled == -EINVAL &&
 	    vreg->voltage_selector != -ENOTRECOVERABLE) {
 		ret = _rpmh_regulator_vrm_set_voltage_sel(rdev,
@@ -302,6 +320,9 @@ static int rpmh_regulator_vrm_set_mode_bypass(struct rpmh_vreg *vreg,
 		.addr = vreg->addr + RPMH_REGULATOR_REG_VRM_MODE,
 	};
 	int pmic_mode;
+
+	/* See _rpmh_regulator_vrm_set_voltage_sel(); this does not fix the reset. */
+	cmd.wait = true;
 
 	if (mode > REGULATOR_MODE_STANDBY)
 		return -EINVAL;
