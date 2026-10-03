@@ -4,6 +4,7 @@
 #include "tuna.dtsi"
 #include "meizu-m2582-memory.dtsi"
 #include "meizu-m2582-power.dtsi"
+#include "meizu-m2582-regulators.dtsi"
 #include "tuna-display.dtsi"
 #include "tuna-usb.dtsi"
 #include "tuna-i2c.dtsi"
