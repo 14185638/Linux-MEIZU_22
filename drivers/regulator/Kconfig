@@ -1887,6 +1887,18 @@ config REGULATOR_WM8994
 	  This driver provides support for the voltage regulators on the
 	  WM8994 CODEC.
 
+config REGULATOR_QCOM_AMOLED
+	tristate "Qualcomm AMOLED regulator support"
+	depends on SPMI || COMPILE_TEST
+	help
+	  This driver supports the AMOLED display power supplies found in
+	  Qualcomm PMICs (IBB, AB/ELVDD and OLEDB). These rails power the
+	  light-emitting elements of an AMOLED panel: without them the panel
+	  accepts its initialisation commands and reports no errors, but
+	  emits no light at all.
+
+	  Say M here if you want to build it as a module.
+
 config REGULATOR_QCOM_LABIBB
 	tristate "Qualcomm LAB/IBB regulator support"
 	depends on SPMI || COMPILE_TEST

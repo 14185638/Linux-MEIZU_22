@@ -44,6 +44,8 @@
  * declared alongside them to be worth much.
  */
 #include "sm8750-pmics.dtsi"
+#include "pmd8028.dtsi"
+#include "meizu-m2582-amoled.dtsi"
 /* 需要 &spmi_bus 标签，必须放在 sm8750-pmics.dtsi 之后 */
 #include "meizu-m2582-thermal.dtsi"
 
@@ -61,7 +63,7 @@
 	qcom,pmic-id = <74 80 69 70 69 86 72>;
 	aliases { serial0 = &uart7; };
 	chosen {
-		bootargs = "console=tty0 console=ttyGS0,115200n8 loglevel=8 ignore_loglevel clk_ignore_unused pd_ignore_unused cpuidle.off=1 initcall_debug rdinit=/init";
+		bootargs = "console=tty0 console=ttyGS0,115200n8 clk_ignore_unused pd_ignore_unused cpuidle.off=1 rdinit=/init";
 	};
 };
 /*

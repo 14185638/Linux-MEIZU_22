@@ -37,7 +37,7 @@
 
 &spmi_bus {
 	pmd8028: pmic@4 {
-		compatible = "qcom,pmd8028", "qcom,spmi-pmic";
+		compatible = "qcom,spmi-pmic";
 		reg = <0x4 SPMI_USID>;
 		#address-cells = <1>;
 		#size-cells = <0>;
