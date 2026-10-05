@@ -104,8 +104,29 @@ void a8xx_gpu_get_slice_info(struct msm_gpu *gpu)
 		return;
 	}
 
+	/*
+	 * A zero read here means the slice-enable register has not been
+	 * programmed yet, not that this part has no slices: nothing in the
+	 * driver writes it before this point, and this runs during GMU resume,
+	 * before the firmware has started.
+	 *
+	 * Taking it at face value sets slice_mask to 0 and rewrites the chip id
+	 * with a slice count of zero, i.e. hands the firmware a GPU with no
+	 * slices enabled -- which is what this board does, and the firmware then
+	 * reports a bad init result (FW_INIT_RESULT 0x901 rather than 0x100).
+	 *
+	 * The vendor never asks the hardware this question at all:
+	 * gen8_get_num_slices() returns a static per-part constant, which for
+	 * this part is GEN8_6_0_NUM_PHYSICAL_SLICES = 2. So fall back to the
+	 * catalog entry's max_slices when the register reads zero, which keeps
+	 * the partial-slice support this read exists for while not turning an
+	 * unprogrammed register into "no GPU".
+	 */
 	slice_mask &= a6xx_cx_misc_read(a6xx_gpu,
 			REG_A8XX_CX_MISC_SLICE_ENABLE_FINAL);
+	if (!slice_mask)
+		slice_mask = GENMASK(info->max_slices - 1, 0);
+
 
 	a6xx_gpu->slice_mask = slice_mask;
 
