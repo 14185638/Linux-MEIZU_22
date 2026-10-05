@@ -249,6 +249,40 @@
 			dma-coherent;
 		};
 
+		/*
+		 * The GPU and its GMU. Both addresses, the interrupt numbers and the
+		 * register windows come from the board's factory device tree, which
+		 * names them "kgsl-3d0@3d00000" and "qcom,gmu@3d37000".
+		 *
+		 * They are siblings, not parent and child: mainline reaches the GMU
+		 * through the GPU node's qcom,gmu phandle, which the board file sets,
+		 * and both therefore have to be real platform devices.
+		 *
+		 * The GPU status stays disabled here and is enabled per board, since
+		 * which chip id the node advertises is a property of the part fitted.
+		 */
+		gpu: gpu@3d00000 {
+			compatible = "qcom,adreno";
+			reg = <0 0x03d00000 0 0x52000>,
+			      <0 0x03d9e000 0 0x2000>,
+			      <0 0x03d61000 0 0x3000>;
+			reg-names = "kgsl_3d0_reg_memory", "cx_mem", "cx_dbgc";
+			interrupts = <GIC_SPI 300 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "kgsl_3d0_irq";
+			status = "disabled";
+		};
+
+		gmu: gmu@3d37000 {
+			compatible = "qcom,adreno-gmu";
+			reg = <0 0x03d37000 0 0x68000>,
+			      <0 0x03d40000 0 0x10000>;
+			reg-names = "gmu", "gmu_ao_blk_dec0";
+			interrupts = <GIC_SPI 304 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 305 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "hfi", "gmu";
+			status = "disabled";
+		};
+
 		tcsrcc: clock-controller@1fbf000 {
 			compatible = "qcom,tuna-tcsrcc";
 			reg = <0 0x01fbf000 0 0x20>;

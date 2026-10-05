@@ -250,6 +250,173 @@
  * SE0 is reachable (0xa80000 reads 0x00000009) and its pads are on gpio52/53.
  * SE1 and SE6 are the only dead windows in wrap 1 -- measured, not guessed.
  */
+
+/*
+ * The GPU. This board's part is an Adreno 825, chip id 0x44030000, which the
+ * factory device tree names "qcom,adreno-gpu-gen8-6-0" with gpu-model
+ * "Adreno825".
+ *
+ * The first compatible must carry the chip id as eight hex digits. Mainline's
+ * find_chipid() parses either "qcom,adreno-<major>.<minor>" or
+ * "qcom,adreno-<8 hex digits>" and understands nothing else, so the vendor's
+ * string would send it to the legacy qcom,chipid property -- and that path
+ * returns NULL from adreno_info() for this part until the a8xx catalog carries
+ * an entry for 0x44030000, which now it does. Without that entry
+ * adreno_has_gpu() is false, no GPU platform device is created, and the only
+ * symptom is "no GPU device was found".
+ *
+ * Register windows come from the vendor node and are collapsed to the three
+ * mainline consumes:
+ *   0x3d00000 + 0x52000   the GPU block, covering CUDA 0x50000 (RSCC), which on
+ *                         a8xx mainline addresses as a fixed offset inside this
+ *                         same window rather than as its own region
+ *   0x3d9e000 + 0x2000    cx_mem
+ *   0x3d61000 + 0x3000    cx_dbgc
+ * The vendor's separate qdss_gfx/qdss_etr/qdss_tmc windows are not carried
+ * over: the coresight nodes already claim those addresses, and they are
+ * debug-only.
+ *
+ * qcom,gmu is mandatory and a6xx_gpu_init() BUG_ON()s without it -- it is not
+ * an optional link.
+ */
+&gpu {
+	compatible = "qcom,adreno-44030000", "qcom,adreno";
+	status = "okay";
+
+	operating-points-v2 = <&gpu_opp_table>;
+
+
+	reg = <0 0x03d00000 0 0x52000>,
+	      <0 0x03d9e000 0 0x2000>,
+	      <0 0x03d61000 0 0x3000>;
+	reg-names = "kgsl_3d0_reg_memory",
+		    "cx_mem",
+		    "cx_dbgc";
+
+	interrupts = <GIC_SPI 300 IRQ_TYPE_LEVEL_HIGH>;
+
+	iommus = <&gpu_smmu 0 0>,
+		 <&gpu_smmu 1 0>;
+
+	qcom,gmu = <&gmu>;
+
+	/*
+	 * GPU DVFS table. Frequencies, RPMh corner levels and ACD levels are the
+	 * vendor's own power levels from power-levels@0 of the factory device tree's
+	 * kgsl node; the highest is 1150 MHz, which is also the vendor's default
+	 * (qcom,initial-pwrlevel = 10 into an 11-entry table).
+	 *
+	 * opp-level values are the vendor's qcom,level words and each one lands exactly
+	 * on an RPMH_REGULATOR_LEVEL_* constant, which is what they are: 0x1b0 is
+	 * TURBO_L2, down to 0x38 which is LOW_SVS_D1.
+	 *
+	 * opp-peak-kBps and qcom,opp-acd-level are deliberately absent for now. The
+	 * first needs the GPU's interconnect path wired up, and the second is consumed
+	 * by the ACD code, which is a later stage. Leaving them out keeps this table to
+	 * the two things the probe needs -- a frequency to pick and a level to vote --
+	 * so that if the GPU still fails to come up the cause is not ambiguous.
+	 */
+	gpu_opp_table: opp-table {
+		compatible = "operating-points-v2-adreno", "operating-points-v2";
+
+		opp-1150000000 {
+			opp-hz = /bits/ 64 <1150000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L2>;
+		};
+
+		opp-1100000000 {
+			opp-hz = /bits/ 64 <1100000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
+		};
+
+		opp-1050000000 {
+			opp-hz = /bits/ 64 <1050000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L0>;
+		};
+
+		opp-937000000 {
+			opp-hz = /bits/ 64 <937000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+		};
+
+		opp-873000000 {
+			opp-hz = /bits/ 64 <873000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_NOM_L1>;
+		};
+
+		opp-763000000 {
+			opp-hz = /bits/ 64 <763000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_NOM>;
+		};
+
+		opp-688000000 {
+			opp-hz = /bits/ 64 <688000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>;
+		};
+
+		opp-643000000 {
+			opp-hz = /bits/ 64 <643000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+		};
+
+		opp-510000000 {
+			opp-hz = /bits/ 64 <510000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		};
+
+		opp-362000000 {
+			opp-hz = /bits/ 64 <362000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		};
+
+		opp-264000000 {
+			opp-hz = /bits/ 64 <264000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D1>;
+		};
+	};
+};
+
+/*
+ * The GMU. A sibling of the GPU node, not a child: the vendor tree has it at
+ * 0x3d37000 and mainline looks it up through the GPU's qcom,gmu phandle, so
+ * both have to be real platform devices.
+ *
+ * reg index 0 is what a6xx_gmu_get_mmio() maps as the GMU base; the vendor's
+ * second window ("gmu_ao_blk_dec0") is not one mainline names. On a8xx mainline
+ * takes RSCC as gpu->mmio + 0x50000 rather than from here, so no rscc region is
+ * needed in this node.
+ *
+ * Power domain names follow mainline's binding: "cx", "gmu", "gx", in that
+ * order, matching gpu_cc_cx_gdsc, gpu_cc_cx_gmu_gdsc and gx_clkctl_gx_gdsc.
+ */
+&gmu {
+	compatible = "qcom,adreno-gmu-825.0", "qcom,adreno-gmu";
+	status = "okay";
+
+	reg = <0 0x03d37000 0 0x68000>,
+	      <0 0x03d40000 0 0x10000>;
+	reg-names = "gmu", "gmu_ao_blk_dec0";
+
+	interrupts = <GIC_SPI 304 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SPI 305 IRQ_TYPE_LEVEL_HIGH>;
+	interrupt-names = "hfi", "gmu";
+
+	clocks = <&gpucc GPU_CC_AHB_CLK>,
+		 <&gpucc GPU_CC_CX_GMU_CLK>,
+		 <&gpucc GPU_CC_CXO_CLK>,
+		 <&gcc GCC_GPU_GEMNOC_GFX_CLK>,
+		 <&gpucc GPU_CC_HUB_CX_INT_CLK>,
+		 <&gpucc GPU_CC_DEMET_CLK>;
+	clock-names = "ahb", "gmu", "cxo", "memnoc", "hub", "demet";
+
+	power-domains = <&gpucc GPU_CC_CX_GDSC>,
+			<&gpucc GPU_CC_CX_GMU_GDSC>,
+			<&gxclkctl 0>;
+	power-domain-names = "cx", "gmu", "gx";
+
+	iommus = <&gpu_smmu 5 0>;
+};
+
 &i2c0 { status = "okay"; };
 
 /* SE6 stays disabled: enabling it panics the board, see above. */
