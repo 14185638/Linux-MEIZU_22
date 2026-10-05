@@ -282,17 +282,17 @@
 &gpu {
 	compatible = "qcom,adreno-44030000", "qcom,adreno";
 	/*
-	 * Disabled on purpose. Enabling it on a board with the firmware installed
-	 * hangs the machine during the DRM probe -- the first GPU power-up -- and
-	 * the failure takes the USB gadget with it, so there is no way back in
-	 * without a physical power cycle. Everything else in this file (catalog
-	 * entry, SMMU, GMU, OPP table, firmware) is in place and the node was
-	 * measured working up to firmware loading; what is missing is the supply
-	 * rails, and until those are modelled the GPU cannot be asked to come up.
+	 * Re-enabled after the GMU got its own OPP table. The previous attempt
+	 * hung during the DRM probe and took the USB gadget with it, and the GMU
+	 * OPP error was the last thing reported before that, so this is the fix
+	 * for the step that failed.
 	 *
-	 * "disabled" keeps the whole path in the tree and testable by changing
-	 * this one word, which is the state to re-enable deliberately rather than
-	 * by accident.
+	 * Note that the vendor node declares no vdd or vddcx either, so the two
+	 * "supply not found, using dummy regulator" lines are normal and were not
+	 * the cause; the vendor GMU's power domains are exactly the three
+	 * declared on &gmu (gpu_cc_cx_gdsc, gpu_cc_cx_gmu_gdsc, gx_clkctl's GX
+	 * rail), and the GPU core is parented through the GMU rather than
+	 * declaring a rail of its own.
 	 */
 	status = "disabled";
 
@@ -428,6 +428,33 @@
 	power-domain-names = "cx", "gmu", "gx";
 
 	iommus = <&gpu_smmu 5 0>;
+
+	operating-points-v2 = <&gmu_opp_table>;
+
+	/*
+	 * The GMU handles its own frequency switching and a6xx_gmu_pwrlevels_probe()
+	 * requires this table -- without it the probe fails outright ("Unable to set
+	 * the OPP table for the GMU"), which is one of the two errors that were
+	 * visible before the first power-up hang.
+	 *
+	 * Frequencies and levels are the vendor's own qcom,gmu-freq-table from the
+	 * factory GMU node: <0x1dcd6500 0x40 0x26be3680 0x80>, i.e. 500 MHz at
+	 * RPMH level 0x40 (LOW_SVS) and 650 MHz at 0x80 (SVS). The vendor boots at
+	 * the first of the pair (qcom,gpu-gmu-perf-ddr-bw sits alongside it).
+	 */
+	gmu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+
+		opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		};
+	};
 };
 
 &i2c0 { status = "okay"; };
