@@ -90,6 +90,21 @@ static const struct dpu_sspp_cfg tuna_sspp[] = {
 		.sblk = &dpu_dma_sblk,
 		.xin_id = 13,
 		.type = SSPP_TYPE_DMA,
+	}, {
+		/*
+		 * M2582: the vendor DT lists seven layers, not six --
+		 * qcom,sde-sspp-type = "vig","vig","dma","dma","dma","dma","dma"
+		 * qcom,sde-sspp-off  = <0x5000 0x7000 0x25000 0x27000 0x29000
+		 *                       0x2b000 0x2d000>
+		 * which normalised by -0x1000 is 0x4000 0x6000 0x24000 0x26000
+		 * 0x28000 0x2a000 0x2c000, i.e. one more DMA at 0x2c000.
+		 */
+		.name = "sspp_12", .id = SSPP_DMA4,
+		.base = 0x2c000, .len = 0x344,
+		.features = DMA_SDM845_MASK_SDMA,
+		.sblk = &dpu_dma_sblk,
+		.xin_id = 14,
+		.type = SSPP_TYPE_DMA,
 	},
 };
 
@@ -212,22 +227,28 @@ static const struct dpu_merge_3d_cfg tuna_merge_3d[] = {
  * NOTE: Each display compression engine (DCE) contains dual hard
  * slice DSC encoders so both share same base address but with
  * its own different sub block address.
+ *
+ * M2582: DPU 12.3 is >= SDE_HW_VER_A00, so the factory driver sets
+ * SDE_DSC_FULL_ICH_PREC on every one of these encoders
+ * (sde_hw_catalog.c: "if (SDE_HW_MAJOR(sde_cfg->hw_rev) >=
+ * SDE_HW_MAJOR(SDE_HW_VER_A00)) set_bit(SDE_DSC_FULL_ICH_PREC, ...)").
+ * It is what makes ENC_DF_CTRL bit 12 get programmed for a 10-bit panel.
  */
 static const struct dpu_dsc_cfg tuna_dsc[] = {
 	{
 		.name = "dce_0_0", .id = DSC_0,
 		.base = 0x80000, .len = 0x8,
-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
+		.features = BIT(DPU_DSC_NATIVE_42x_EN) | BIT(DPU_DSC_FULL_ICH_PREC),
 		.sblk = &sm8750_dsc_sblk_0,
 	}, {
 		.name = "dce_0_1", .id = DSC_1,
 		.base = 0x80000, .len = 0x8,
-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
+		.features = BIT(DPU_DSC_NATIVE_42x_EN) | BIT(DPU_DSC_FULL_ICH_PREC),
 		.sblk = &sm8750_dsc_sblk_1,
 	}, {
 		.name = "dce_1_0", .id = DSC_2,
 		.base = 0x81000, .len = 0x8,
-		.features = BIT(DPU_DSC_NATIVE_42x_EN),
+		.features = BIT(DPU_DSC_NATIVE_42x_EN) | BIT(DPU_DSC_FULL_ICH_PREC),
 		.sblk = &sm8750_dsc_sblk_0,
 	},
 };
@@ -264,6 +285,16 @@ static const struct dpu_cwb_cfg tuna_cwb[] = {
 	},
 };
 
+/*
+ * Interface base map: sm8750's, which is also the vendor's.
+ *
+ * The DPU picks an interface by type and controller id, so a wrong base is
+ * silent -- it drives a block nothing is wired to. The vendor's mmio window
+ * starts at 0xae00000 and mainline's DPU node at 0xae01000, so every vendor
+ * block offset is ours + 0x1000: our intf_1 = 0x35000 is the vendor's
+ * 0x36000 (type "dsi"), and our tear block 0x35800 is theirs at 0x36800.
+ * Every other block in this file is normalised the same way.
+ */
 static const struct dpu_intf_cfg tuna_intf[] = {
 	{
 		.name = "intf_0", .id = INTF_0,
@@ -281,6 +312,11 @@ static const struct dpu_intf_cfg tuna_intf[] = {
 		.prog_fetch_lines_worst_case = 24,
 		.intr_underrun = DPU_IRQ_IDX(MDP_SSPP_TOP0_INTR, 26),
 		.intr_vsync = DPU_IRQ_IDX(MDP_SSPP_TOP0_INTR, 27),
+		/*
+		 * Tear block is this base + 0x800: 0x35000 + 0x800 == 0x35800
+		 * == MDP_INTF_REV_7xxx_TEAR_OFF(1). The vendor spells the same
+		 * register 0x36800; see the note above tuna_intf[].
+		 */
 		.intr_tear_rd_ptr = DPU_IRQ_IDX(MDP_INTF1_TEAR_INTR, 2),
 	}, {
 		.name = "intf_2", .id = INTF_2,

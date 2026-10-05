@@ -29,6 +29,35 @@ FB_GEN_DEFAULT_DEFERRED_SYSMEM_OPS(msm_fbdev,
 				   drm_fb_helper_damage_range,
 				   drm_fb_helper_damage_area)
 
+/*
+ * Page lookup for the deferred-I/O handler.
+ *
+ * Equivalent to drm_fbdev_shmem_get_page(), which cannot be used here because
+ * this driver does not build drm_fbdev_shmem.o. msm keeps its pages in
+ * msm_gem_object::pages, populated by msm_gem_get_pages() while the buffer is
+ * mapped, which is exactly the lifetime over which the handler runs.
+ */
+static struct page *msm_fbdev_get_page(struct fb_info *info,
+				       unsigned long offset)
+{
+	struct drm_fb_helper *helper = (struct drm_fb_helper *)info->par;
+	struct drm_gem_object *obj = msm_framebuffer_bo(helper->fb, 0);
+	struct msm_gem_object *msm_obj = to_msm_bo(obj);
+	unsigned int i = offset >> PAGE_SHIFT;
+	struct page *page;
+
+	if (WARN_ON_ONCE(offset > obj->size))
+		return NULL;
+
+	page = msm_obj->pages[i];
+	if (page)
+		get_page(page);
+	else
+		WARN_ON_ONCE(1);
+
+	return page;
+}
+
 static int msm_fbdev_mmap(struct fb_info *info, struct vm_area_struct *vma)
 {
 	struct drm_fb_helper *helper = (struct drm_fb_helper *)info->par;
@@ -143,6 +172,22 @@ int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	fbi->screen_size = bo->size;
 	fbi->fix.smem_start = paddr;
 	fbi->fix.smem_len = bo->size;
+
+	/*
+	 * M2582: fb_ops is built from FB_GEN_DEFAULT_DEFERRED_SYSMEM_OPS(), so
+	 * dirty pages only become damage callbacks once fbdefio is installed;
+	 * as fb_deferred_io_init() was never called, no commit was ever
+	 * requested for the framebuffer contents written by fb_write().
+	 */
+	helper->fbdefio.delay = HZ / 20;
+	helper->fbdefio.get_page = msm_fbdev_get_page;
+	helper->fbdefio.deferred_io = drm_fb_helper_deferred_io;
+
+	fbi->fbdefio = &helper->fbdefio;
+
+	ret = fb_deferred_io_init(fbi);
+	if (ret)
+		goto fail;
 
 	DBG("par=%p, %dx%d", fbi->par, fbi->var.xres, fbi->var.yres);
 	DBG("allocated %dx%d fb", fb->width, fb->height);

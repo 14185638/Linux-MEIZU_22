@@ -392,6 +392,14 @@ struct dpu_hw_tear_check {
 	u32 sync_threshold_continue;
 	u32 start_pos;
 	u32 rd_ptr_irq;
+	/*
+	 * M2582: the vendor's tear check also programs a write-pointer IRQ line
+	 * and a detect control value (sde_hw_intf_setup_te_config() writes
+	 * INTF_TEAR_WR_PTR_IRQ and INTF_TEAR_TEAR_DETECT_CTRL); upstream has
+	 * neither field. wr_ptr_irq is the line at which the write pointer
+	 * interrupt is raised and is 1 in the vendor.
+	 */
+	u32 wr_ptr_irq;
 	u8 hw_vsync_mode;
 };
 

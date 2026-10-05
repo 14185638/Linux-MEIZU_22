@@ -353,4 +353,8 @@ void dpu_encoder_frame_done_callback(
 void dpu_encoder_phys_init(struct dpu_encoder_phys *phys,
 			   struct dpu_enc_phys_init_params *p);
 
+void drm_mode_to_intf_timing_params(const struct dpu_encoder_phys *phys_enc,
+				    const struct drm_display_mode *mode,
+				    struct dpu_hw_intf_timing_params *timing);
+
 #endif /* __dpu_encoder_phys_H__ */

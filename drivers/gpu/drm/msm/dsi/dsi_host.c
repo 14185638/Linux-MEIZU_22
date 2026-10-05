@@ -93,6 +93,14 @@ static int dsi_get_version(const void __iomem *base, u32 *major, u32 *minor)
 #define DSI_ERR_STATE_INTERLEAVE_OP_CONTENTION	0x0010
 #define DSI_ERR_STATE_PLL_UNLOCKED		0x0020
 
+/*
+ * The panel driver sets this on every message of a command set except the
+ * last (its dsi_panel.h defines it as BIT(6)); mainline leaves the bit free.
+ * It never reaches the hardware -- dsi_cmd_dma_add() and the batch handling
+ * in msm_dsi_host_xfer_prepare()/_restore() keep the set as one burst.
+ */
+#define MIPI_DSI_MSG_BATCH_COMMAND		BIT(6)
+
 #define DSI_CLK_CTRL_ENABLE_CLKS	\
 		(DSI_CLK_CTRL_AHBS_HCLK_ON | DSI_CLK_CTRL_AHBM_SCLK_ON | \
 		DSI_CLK_CTRL_PCLK_ON | DSI_CLK_CTRL_DSICLK_ON | \
@@ -181,6 +189,13 @@ struct msm_dsi_host {
 	bool cphy_mode;
 
 	u32 dma_cmd_ctrl_restore;
+
+	/*
+	 * Set while a batch of messages is being pushed: the command engine
+	 * stays enabled and the bus is not released until the last message of
+	 * the set, so a multi-command set reaches the panel as one stream.
+	 */
+	bool cmd_batch_open;
 
 	bool registered;
 	bool power_on;
@@ -872,7 +887,13 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 	data |= DSI_TRIG_CTRL_STREAM(msm_host->channel);
 	if ((cfg_hnd->major == MSM_DSI_VER_MAJOR_6G) &&
 		(cfg_hnd->minor >= MSM_DSI_6G_VER_MINOR_V1_2))
-		data |= DSI_TRIG_CTRL_BLOCK_DMA_WITHIN_FRAME;
+		/*
+		 * "Block DMA within frame" is bit 13 on this controller, not
+		 * the bit 12 that mainline's dsi.xml.h names it. Two working
+		 * configurations read back 0x80002004 (vendor kernel) and
+		 * 0x00002000 (bootloader), neither with bit 12 set.
+		 */
+		data |= BIT(13);
 	dsi_write(msm_host, REG_DSI_TRIG_CTRL, data);
 
 	data = DSI_CLKOUT_TIMING_CTRL_T_CLK_POST(phy_shared_timings->clk_post) |
@@ -977,6 +998,12 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 		reg_ctrl2 &= ~DSI_COMMAND_COMPRESSION_MODE_CTRL2_STREAM0_SLICE_WIDTH__MASK;
 		reg_ctrl2 |= DSI_COMMAND_COMPRESSION_MODE_CTRL2_STREAM0_SLICE_WIDTH(dsc->slice_chunk_size);
 
+		/*
+		 * Stream 1 of both registers is deliberately left at its reset
+		 * value: the vendor's running controller has stream1 EN = 0 and
+		 * stream1 SLICE_WIDTH = 0, while it does program the matching
+		 * DSI_CMD_MDP_STREAM1_* registers in dsi_timing_setup().
+		 */
 		dsi_write(msm_host, REG_DSI_COMMAND_COMPRESSION_MODE_CTRL, reg_ctrl);
 		dsi_write(msm_host, REG_DSI_COMMAND_COMPRESSION_MODE_CTRL2, reg_ctrl2);
 	} else {
@@ -1111,6 +1138,13 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 			 */
 			wc = msm_host->dsc->slice_chunk_size + 1;
 
+		/*
+		 * The vendor's setup_cmd_stream() programs the HS transaction
+		 * timer, DSI_HS_TIMER_CTRL = 0x49c3c, right before
+		 * DSI_CMD_MDP_STREAM0_CTRL; mainline defines the register but
+		 * never writes it, leaving it at its reset value.
+		 */
+		dsi_write(msm_host, REG_DSI_HS_TIMER_CTRL, 0x49C3C);
 		dsi_write(msm_host, REG_DSI_CMD_MDP_STREAM0_CTRL,
 			DSI_CMD_MDP_STREAM0_CTRL_WORD_COUNT(wc) |
 			DSI_CMD_MDP_STREAM0_CTRL_VIRTUAL_CHANNEL(
@@ -1119,6 +1153,23 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 					MIPI_DSI_DCS_LONG_WRITE));
 
 		dsi_write(msm_host, REG_DSI_CMD_MDP_STREAM0_TOTAL,
+			DSI_CMD_MDP_STREAM0_TOTAL_H_TOTAL(hdisplay) |
+			DSI_CMD_MDP_STREAM0_TOTAL_V_TOTAL(mode->vdisplay));
+
+		/*
+		 * The vendor programs stream 1 with the same values as stream
+		 * 0. The two streams feed the two DSC encoders of this panel's
+		 * topology (qcom,display-topology = <2 2 1>), so leaving one
+		 * at reset halves what the interface was dimensioned to drive.
+		 */
+		dsi_write(msm_host, REG_DSI_CMD_MDP_STREAM1_CTRL,
+			DSI_CMD_MDP_STREAM0_CTRL_WORD_COUNT(wc) |
+			DSI_CMD_MDP_STREAM0_CTRL_VIRTUAL_CHANNEL(
+					msm_host->channel) |
+			DSI_CMD_MDP_STREAM0_CTRL_DATA_TYPE(
+					MIPI_DSI_DCS_LONG_WRITE));
+
+		dsi_write(msm_host, REG_DSI_CMD_MDP_STREAM1_TOTAL,
 			DSI_CMD_MDP_STREAM0_TOTAL_H_TOTAL(hdisplay) |
 			DSI_CMD_MDP_STREAM0_TOTAL_V_TOTAL(mode->vdisplay));
 	}
@@ -1350,7 +1401,14 @@ static int dsi_cmd_dma_add(struct msm_dsi_host *msm_host,
 	data[0] = packet.header[1];
 	data[1] = packet.header[2];
 	data[2] = packet.header[0];
-	data[3] = BIT(7); /* Last packet */
+
+	/*
+	 * Byte 3 is the command descriptor's flag byte; bit 7 marks the last
+	 * packet and makes the controller release the bus to LP-11. The vendor
+	 * leaves it clear for every message of a command set but the last, so
+	 * the set goes out as one continuous burst.
+	 */
+	data[3] = (msg->flags & MIPI_DSI_MSG_BATCH_COMMAND) ? 0 : BIT(7);
 	if (mipi_dsi_packet_format_is_long(msg->type))
 		data[3] |= BIT(6);
 	if (msg->rx_buf && msg->rx_len)
@@ -1899,11 +1957,49 @@ static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc
 	drm_dsc_set_const_params(dsc);
 	drm_dsc_set_rc_buf_thresh(dsc);
 
-	/* DPU supports only pre-SCR panels */
-	ret = drm_dsc_setup_rc_params(dsc, DRM_DSC_1_1_PRE_SCR);
+	/*
+	 * The panel is DSC 1.2 4:4:4 (rc_range_params[0] = 0x0202), where
+	 * DRM_DSC_1_1_PRE_SCR would give the legacy 0x0201.
+	 */
+	ret = drm_dsc_setup_rc_params(dsc, DRM_DSC_1_2_444);
 	if (ret) {
 		DRM_DEV_ERROR(&msm_host->pdev->dev, "could not find DSC RC parameters\n");
 		return ret;
+	}
+
+	/*
+	 * DSC 1.2 derives first_line_bpg_offset from the slice height, which
+	 * mainline's DRM_DSC_1_2_444 table does not carry: a 30-line slice
+	 * wants 13 where the table says 12. It must be set before
+	 * drm_dsc_compute_rc_parameters(), which derives nfl_bpg_offset,
+	 * initial_dec_delay and scale_increment_interval from it.
+	 */
+	{
+		/* bits_per_pixel carries four fractional bits. */
+		u32 bpp = dsc->bits_per_pixel >> 4;
+		u32 uncompressed_bpg_rate;
+		u32 flbo;
+
+		if (dsc->slice_height < 8)
+			flbo = 2 * (dsc->slice_height - 1);
+		else if (dsc->slice_height < 20)
+			flbo = 12;
+		else if (dsc->slice_height <= 30)
+			flbo = 13;
+		else if (dsc->slice_height < 42)
+			flbo = 14;
+		else
+			flbo = 15;
+
+		if (dsc->native_422)
+			uncompressed_bpg_rate = 3 * bpp * 4;
+		else if (dsc->native_420)
+			uncompressed_bpg_rate = 3 * bpp;
+		else
+			uncompressed_bpg_rate = (3 * bpp + 2) * 3;
+
+		dsc->first_line_bpg_offset =
+			min(flbo, uncompressed_bpg_rate - 3 * bpp);
 	}
 
 	dsc->initial_scale_value = drm_dsc_initial_scale_value(dsc);
@@ -2157,7 +2253,6 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 				const struct mipi_dsi_msg *msg)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
-	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
 
 	/* TODO: make sure dsi_cmd_mdp is idle.
 	 * Since DSI6G v1.2.0, we can set DSI_TRIG_CTRL.BLOCK_DMA_WITHIN_FRAME
@@ -2170,20 +2265,32 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 	 * mdp clock need to be enabled to receive dsi interrupt
 	 */
 	pm_runtime_get_sync(&msm_host->pdev->dev);
-	cfg_hnd->ops->link_clk_set_rate(msm_host);
-	cfg_hnd->ops->link_clk_enable(msm_host);
+
+	/*
+	 * The link clocks are enabled once by msm_dsi_host_power_on() and
+	 * stay up until power_off(); the vendor likewise takes its clock
+	 * votes once per display rather than once per message.
+	 */
 
 	/* TODO: vote for bus bandwidth */
 
-	if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
-		dsi_set_tx_power_mode(0, msm_host);
+	/*
+	 * Drive DSI_CMD_DMA_CTRL_LOW_POWER in both directions -- mainline
+	 * only ever cleared it -- but inside a batch leave the command engine
+	 * and the bus as the previous message left them, so a multi-command
+	 * set is not broken up into unrelated transactions.
+	 */
+	if (!msm_host->cmd_batch_open) {
+		dsi_set_tx_power_mode((msg->flags & MIPI_DSI_MSG_USE_LPM) ? 1 : 0,
+				      msm_host);
 
-	msm_host->dma_cmd_ctrl_restore = dsi_read(msm_host, REG_DSI_CTRL);
-	dsi_write(msm_host, REG_DSI_CTRL,
-		msm_host->dma_cmd_ctrl_restore |
-		DSI_CTRL_CMD_MODE_EN |
-		DSI_CTRL_ENABLE);
-	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 1);
+		msm_host->dma_cmd_ctrl_restore = dsi_read(msm_host, REG_DSI_CTRL);
+		dsi_write(msm_host, REG_DSI_CTRL,
+			msm_host->dma_cmd_ctrl_restore |
+			DSI_CTRL_CMD_MODE_EN |
+			DSI_CTRL_ENABLE);
+		dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 1);
+	}
 
 	return 0;
 }
@@ -2194,15 +2301,27 @@ void msm_dsi_host_xfer_restore(struct mipi_dsi_host *host,
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
 
-	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 0);
-	dsi_write(msm_host, REG_DSI_CTRL, msm_host->dma_cmd_ctrl_restore);
+	/*
+	 * While a batch is still open the controller stays enabled and the
+	 * power mode is untouched -- dsi_cmd_dma_add() has cleared the "last
+	 * packet" bit, so the bus stays in HS for the next command.
+	 */
+	if (msg->flags & MIPI_DSI_MSG_BATCH_COMMAND) {
+		msm_host->cmd_batch_open = true;
+	} else {
+		msm_host->cmd_batch_open = false;
+		dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 0);
+		dsi_write(msm_host, REG_DSI_CTRL, msm_host->dma_cmd_ctrl_restore);
 
-	if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
-		dsi_set_tx_power_mode(1, msm_host);
+		if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
+			dsi_set_tx_power_mode(1, msm_host);
+	}
 
 	/* TODO: unvote for bus bandwidth */
 
-	cfg_hnd->ops->link_clk_disable(msm_host);
+	/* Paired with xfer_prepare(); the link stays up while powered on. */
+	if (!msm_host->power_on)
+		cfg_hnd->ops->link_clk_disable(msm_host);
 	pm_runtime_put(&msm_host->pdev->dev);
 }
 
@@ -2352,10 +2471,33 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 	return ret;
 }
 
+/*
+ * The vendor's kickoff path raises the command engine's VBIF priority to 7
+ * before every software trigger (DSI_VBIF_CTRL, vendor offset 0x1cc, our
+ * 0x1c8); mainline has no such register and leaves the command DMA reads at
+ * priority 0, where they can be starved while the DMA still reports done.
+ */
+#define REG_DSI_VBIF_CTRL		0x000001c8
+#define DSI_VBIF_CTRL_PRIORITY__MASK	0x00000007
+
 void msm_dsi_host_cmd_xfer_commit(struct mipi_dsi_host *host, u32 dma_base,
 				  u32 len)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+	u32 vbif;
+
+	/*
+	 * TEST_PATTERN_GEN_CTRL bit 2 is TPG_DMA_FIFO_MODE: when set the
+	 * command engine takes its payload from the test-pattern FIFO instead
+	 * of the address in DMA_CMD_OFFSET. The vendor's reset_cmd_fifo()
+	 * clears it before returning to the memory path; do the same here.
+	 */
+	dsi_write(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL, 0);
+
+	/* Raise the command engine's bus priority, as the vendor does. */
+	vbif = dsi_read(msm_host, REG_DSI_VBIF_CTRL);
+	vbif |= DSI_VBIF_CTRL_PRIORITY__MASK;
+	dsi_write(msm_host, REG_DSI_VBIF_CTRL, vbif);
 
 	dsi_write(msm_host, REG_DSI_DMA_BASE, dma_base);
 	dsi_write(msm_host, REG_DSI_DMA_LEN, len);

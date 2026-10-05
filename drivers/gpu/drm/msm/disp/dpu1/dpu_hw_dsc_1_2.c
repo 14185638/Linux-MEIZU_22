@@ -122,6 +122,17 @@ static void dpu_hw_dsc_config_1_2(struct dpu_hw_dsc *hw_dsc,
 	if (mode & DSC_MODE_VIDEO)
 		data |= BIT(9);
 
+	/*
+	 * ENC_DF_CTRL[12] selects full-precision ICH error tracking. The
+	 * decoder's rate-control model is built from the exact values in the
+	 * PPS, so an encoder that tracks ICH error at reduced precision drifts
+	 * away from the decoder's model of the same buffer and reconstructs
+	 * corrupted output.
+	 */
+	if ((hw_dsc->caps->features & BIT(DPU_DSC_FULL_ICH_PREC)) &&
+	    dsc->bits_per_component > 8)
+		data |= BIT(12);
+
 	data |= (_dsc_calc_output_buf_max_addr(hw_dsc, num_active_slice_per_enc) << 18);
 
 	DPU_REG_WRITE(hw, sblk->enc.base + ENC_DF_CTRL, data);

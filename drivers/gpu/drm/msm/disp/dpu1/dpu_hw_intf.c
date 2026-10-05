@@ -64,6 +64,7 @@
 #define INTF_PROG_FETCH_START           0x170
 #define INTF_PROG_ROT_START             0x174
 
+#define INTF_VSYNC_TIMESTAMP_CTRL       0x210
 #define INTF_MISR_CTRL                  0x180
 #define INTF_MISR_SIGNATURE             0x184
 
@@ -91,6 +92,18 @@
 #define INTF_TEAR_OUT_LINE_COUNT        0x2AC
 #define INTF_TEAR_LINE_COUNT            0x2B0
 #define INTF_TEAR_AUTOREFRESH_CONFIG    0x2B4
+/*
+ * Tear-check registers and bits added in DPU 10.0: the tear-detect control,
+ * the upper halves of the sync threshold and write count, and the
+ * TE_SINGLE_UPDATE enable bit. Earlier cores do not have them.
+ */
+#define INTF_TEAR_TEAR_DETECT_CTRL      0x2B8
+#define INTF_TEAR_SYNC_THRESH_EXT       0x2E0
+#define INTF_TEAR_SYNC_WRCOUNT_EXT      0x2E4
+/* TE_SINGLE_UPDATE, only meaningful on cores that carry the feature. */
+#define INTF_TEAR_TE_SINGLE_UPDATE      BIT(3)
+/* VSYNC_TS_SRC_EN: dp_intf timestamp source select, set from DPU 10.0 on. */
+#define INTF_VSYNC_TS_SRC_EN            BIT(5)
 
 #define INTF_CFG_ACTIVE_H_EN	BIT(29)
 #define INTF_CFG_ACTIVE_V_EN	BIT(30)
@@ -98,6 +111,13 @@
 #define INTF_CFG2_DATABUS_WIDEN	BIT(0)
 #define INTF_CFG2_DATA_HCTL_EN	BIT(4)
 #define INTF_CFG2_DCE_DATA_COMPRESS     BIT(12)
+/*
+ * INTF_CONFIG2 bits the vendor sets for DSI outputs of DPU 7.0+ cores:
+ * BIT(24) is SDE_INTF_PERIPHERAL_FLUSH, BIT(28) is SDE_INTF_PROG_DYNREF.
+ * Upstream programs neither.
+ */
+#define INTF_CFG2_PERIPHERAL_FLUSH      BIT(24)
+#define INTF_CFG2_PROG_DYNREF           BIT(28)
 
 
 static void dpu_hw_intf_setup_timing_engine(struct dpu_hw_intf *intf,
@@ -169,6 +189,10 @@ static void dpu_hw_intf_setup_timing_engine(struct dpu_hw_intf *intf,
 
 	if (p->wide_bus_en)
 		intf_cfg2 |= INTF_CFG2_DATABUS_WIDEN;
+
+	/* Must be part of intf_cfg2 before the INTF_CONFIG2 write below. */
+	if (!dp_intf && intf->mdss_ver->core_major_ver >= 7)
+		intf_cfg2 |= INTF_CFG2_PERIPHERAL_FLUSH | INTF_CFG2_PROG_DYNREF;
 
 	data_width = p->width;
 
@@ -279,6 +303,15 @@ static void dpu_hw_intf_enable_timing_engine(
 	struct dpu_hw_blk_reg_map *c = &intf->hw;
 	/* Note: Display interface select is handled in top block hw layer */
 	DPU_REG_WRITE(c, INTF_TIMING_ENGINE_EN, enable != 0);
+
+	/*
+	 * The timestamp block has to be enabled together with the timing
+	 * engine. The vendor gates this on interface capability bits that
+	 * struct dpu_intf_cfg does not model, so the value they select for
+	 * this interface is written directly.
+	 */
+	if (enable)
+		DPU_REG_WRITE(c, INTF_VSYNC_TIMESTAMP_CTRL, 0x11);
 }
 
 static void dpu_hw_intf_setup_prg_fetch(
@@ -371,30 +404,77 @@ static int dpu_hw_intf_enable_te(struct dpu_hw_intf *intf,
 {
 	struct dpu_hw_blk_reg_map *c;
 	int cfg;
+	/*
+	 * DPU 10.0+ interfaces carry the 32-bit tear-check registers and
+	 * TE_SINGLE_UPDATE; upstream has neither flag.
+	 */
+	bool te_32bit;
+	bool te_single_update;
+	u32 val;
 
 	if (!intf)
 		return -EINVAL;
 
+	te_32bit = intf->mdss_ver->core_major_ver >= 10;
+	te_single_update = intf->mdss_ver->core_major_ver >= 10;
+
 	c = &intf->hw;
 
-	cfg = BIT(19); /* VSYNC_COUNTER_EN */
+	/*
+	 * These tear-check registers are single-buffered: they only latch while
+	 * VSYNC_COUNTER_EN (BIT(19)) is clear. Program the config without it
+	 * first, then set it in the second write once the rest is in place.
+	 */
+	cfg = 0;
 	if (te->hw_vsync_mode)
 		cfg |= BIT(20);
 
 	cfg |= te->vsync_count;
 
 	DPU_REG_WRITE(c, INTF_TEAR_SYNC_CONFIG_VSYNC, cfg);
+	wmb(); /* vsync counter disabled while the single-buffer regs are written */
+
 	DPU_REG_WRITE(c, INTF_TEAR_SYNC_CONFIG_HEIGHT, te->sync_cfg_height);
 	DPU_REG_WRITE(c, INTF_TEAR_VSYNC_INIT_VAL, te->vsync_init_val);
 	DPU_REG_WRITE(c, INTF_TEAR_RD_PTR_IRQ, te->rd_ptr_irq);
+	DPU_REG_WRITE(c, INTF_TEAR_WR_PTR_IRQ, te->wr_ptr_irq);
 	DPU_REG_WRITE(c, INTF_TEAR_START_POS, te->start_pos);
+	/*
+	 * Selects when the incoming TE pulse is sampled. Left at its reset
+	 * value the interface never latches a tear event.
+	 */
+	DPU_REG_WRITE(c, INTF_TEAR_TEAR_DETECT_CTRL,
+			te->vsync_init_val + 0x14);
+	/*
+	 * Upper halves of the sync threshold and of start_pos + threshold + 1;
+	 * without them only the low 16 bits of each are programmed.
+	 */
+	if (te_32bit)
+		DPU_REG_WRITE(c, INTF_TEAR_SYNC_THRESH_EXT,
+			      ((te->sync_threshold_continue & 0xffff0000) |
+			       (te->sync_threshold_start >> 16)));
 	DPU_REG_WRITE(c, INTF_TEAR_SYNC_THRESH,
 			((te->sync_threshold_continue << 16) |
 			 te->sync_threshold_start));
+
+	cfg |= BIT(19); /* VSYNC_COUNTER_EN */
+	DPU_REG_WRITE(c, INTF_TEAR_SYNC_CONFIG_VSYNC, cfg);
+	wmb(); /* ensure vsync_counter_en is written */
+
+	if (te_32bit)
+		DPU_REG_WRITE(c, INTF_TEAR_SYNC_WRCOUNT_EXT,
+			      ((te->start_pos + te->sync_threshold_start + 1) >> 16));
 	DPU_REG_WRITE(c, INTF_TEAR_SYNC_WRCOUNT,
 			(te->start_pos + te->sync_threshold_start + 1));
 
-	DPU_REG_WRITE(c, INTF_TEAR_TEAR_CHECK_EN, 1);
+	/*
+	 * DPU 10.0+ interfaces need TE_SINGLE_UPDATE set alongside the enable
+	 * bit; upstream writes a bare 1.
+	 */
+	val = 1;
+	if (te_single_update)
+		val |= INTF_TEAR_TE_SINGLE_UPDATE;
+	DPU_REG_WRITE(c, INTF_TEAR_TEAR_CHECK_EN, val);
 
 	return 0;
 }

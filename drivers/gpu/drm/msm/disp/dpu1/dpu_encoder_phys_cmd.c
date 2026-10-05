@@ -339,6 +339,10 @@ static void dpu_encoder_phys_cmd_irq_disable(struct dpu_encoder_phys *phys_enc)
 	dpu_core_irq_unregister_callback(phys_enc->dpu_kms, phys_enc->irq[INTR_IDX_PINGPONG]);
 }
 
+/* defined below; called from _dpu_encoder_phys_cmd_pingpong_config() */
+static void dpu_encoder_phys_cmd_setup_timing_engine(
+		struct dpu_encoder_phys *phys_enc);
+
 static void dpu_encoder_phys_cmd_tearcheck_config(
 		struct dpu_encoder_phys *phys_enc)
 {
@@ -388,16 +392,35 @@ static void dpu_encoder_phys_cmd_tearcheck_config(
 				(mode->vtotal * drm_mode_vrefresh(mode));
 
 	/*
-	 * Set the sync_cfg_height to twice vtotal so that if we lose a
-	 * TE event coming from the display TE pin we won't stall immediately
+	 * M2582: drm_mode_vrefresh() divides mode->clock by htotal*vtotal, and
+	 * msm_dsi derives the DSI link rate from that same mode->clock, so it
+	 * reports ~184 Hz for this 120 Hz panel. The tear-check counter has to
+	 * count at the rate the panel actually scans at.
 	 */
-	tc_cfg.hw_vsync_mode = 1;
-	tc_cfg.sync_cfg_height = mode->vtotal * 2;
+#define M2582_PANEL_FPS	120
+	tc_cfg.vsync_count = vsync_hz / (mode->vtotal * M2582_PANEL_FPS);
+
+	/*
+	 * M2582: hw_vsync_mode would make the tear-check counter use the
+	 * interface's own hardware vsync; the panel's TE signal is wired to
+	 * this DPU and must drive it instead (upstream sets this bit).
+	 */
+	tc_cfg.hw_vsync_mode = 0;
+
+	/*
+	 * M2582: a near-maximum sync_cfg_height suppresses the tear-check
+	 * block's own hardware TE generation, so only the panel's TE pulse can
+	 * advance the write pointer. With the upstream twice-vtotal value the
+	 * DPU latches to a self-generated frame boundary instead of the panel.
+	 */
+	tc_cfg.sync_cfg_height = 0xFFF0;
 	tc_cfg.vsync_init_val = mode->vdisplay;
 	tc_cfg.sync_threshold_start = DEFAULT_TEARCHECK_SYNC_THRESH_START;
 	tc_cfg.sync_threshold_continue = DEFAULT_TEARCHECK_SYNC_THRESH_CONTINUE;
 	tc_cfg.start_pos = mode->vdisplay;
 	tc_cfg.rd_ptr_irq = mode->vdisplay + 1;
+	/* M2582: the vendor's tear-check setup also raises the write-pointer IRQ */
+	tc_cfg.wr_ptr_irq = 1;
 
 	DPU_DEBUG_CMDENC(cmd_enc,
 		"tc vsync_clk_speed_hz %lu vtotal %u vrefresh %u\n",
@@ -437,6 +460,27 @@ static void _dpu_encoder_phys_cmd_pingpong_config(
 
 	_dpu_encoder_phys_cmd_update_intf_cfg(phys_enc);
 	dpu_encoder_phys_cmd_tearcheck_config(phys_enc);
+	dpu_encoder_phys_cmd_setup_timing_engine(phys_enc);
+}
+
+/*
+ * M2582: upstream only programs the interface timing generator from the video
+ * encoder, so a command-mode interface keeps it disabled. Do that explicitly
+ * here too: a warm restart can leave the block running.
+ */
+static void dpu_encoder_phys_cmd_setup_timing_engine(
+		struct dpu_encoder_phys *phys_enc)
+{
+	if (!phys_enc->hw_intf || !phys_enc->hw_intf->ops.enable_timing) {
+		DPU_ERROR("M2582: intf timing engine not available\n");
+		return;
+	}
+
+	/*
+	 * A free-running timing generator keeps the tear-check block from
+	 * latching a frame, so make sure it stays off.
+	 */
+	phys_enc->hw_intf->ops.enable_timing(phys_enc->hw_intf, 0);
 }
 
 static bool dpu_encoder_phys_cmd_needs_single_flush(

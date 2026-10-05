@@ -616,8 +616,17 @@ static void dpu_hw_ctl_intf_cfg_v1(struct dpu_hw_ctl *ctx,
 	DPU_REG_WRITE(c, CTL_DSC_ACTIVE, dsc_active);
 	DPU_REG_WRITE(c, CTL_MERGE_3D_ACTIVE, merge_3d_active);
 
-	if (cfg->intf_master)
-		DPU_REG_WRITE(c, CTL_INTF_MASTER, BIT(cfg->intf_master - INTF_0));
+	/*
+	 * A single-interface (non-split) encoder leaves cfg->intf_master at 0,
+	 * but the hardware uses CTL_INTF_MASTER to hand the frame to the
+	 * interface at CTL_START, so fall back to cfg->intf and always program
+	 * it.
+	 */
+	if (cfg->intf_master || cfg->intf) {
+		u32 intf_master = cfg->intf_master ? cfg->intf_master : cfg->intf;
+
+		DPU_REG_WRITE(c, CTL_INTF_MASTER, BIT(intf_master - INTF_0));
+	}
 
 	if (cfg->cdm)
 		DPU_REG_WRITE(c, CTL_CDM_ACTIVE, cfg->cdm);

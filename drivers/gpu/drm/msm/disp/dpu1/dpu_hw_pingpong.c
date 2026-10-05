@@ -319,6 +319,11 @@ struct dpu_hw_pingpong *dpu_hw_pingpong_init(struct drm_device *dev,
 		c->ops.disable_autorefresh = dpu_hw_pp_disable_autorefresh;
 	}
 
+	/*
+	 * M2582: from DPU 7.x on the pingpong has no DSC sub-block, compression
+	 * being driven by the standalone DCE blocks instead, so keep upstream's
+	 * DPU < 7 gate on the DSC hooks.
+	 */
 	if (mdss_rev->core_major_ver < 7) {
 		c->ops.setup_dsc = dpu_hw_pp_setup_dsc;
 		c->ops.enable_dsc = dpu_hw_pp_dsc_enable;

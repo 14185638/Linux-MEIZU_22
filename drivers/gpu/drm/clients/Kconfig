@@ -34,6 +34,11 @@ config DRM_FBDEV_EMULATION
 	select DRM_CLIENT
 	select DRM_CLIENT_SETUP
 	select FRAMEBUFFER_CONSOLE_DETECT_PRIMARY if FRAMEBUFFER_CONSOLE
+	# M2582: msm_fbdev installs a deferred-I/O handler, and fb_write() only
+	# reaches the display through it. The helper it needs lives behind
+	# FB_DEFERRED_IO, which is a hidden symbol nothing else selects here;
+	# without it framebuffer writes update memory that is never scanned out.
+	select FB_DEFERRED_IO
 	default FB
 	help
 	  Choose this option if you have a need for the legacy fbdev

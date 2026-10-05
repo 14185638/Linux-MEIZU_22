@@ -492,6 +492,13 @@ static int mdss_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/*
+	 * Hold a runtime PM reference: MDSS is the dispcc clock provider for the
+	 * children created above, and enabling one of their clocks returns -EBUSY
+	 * while this provider is runtime-suspended. This costs idle power but
+	 * keeps the children's probe path working.
+	 */
+	pm_runtime_get_noresume(dev);
 	return 0;
 }
 

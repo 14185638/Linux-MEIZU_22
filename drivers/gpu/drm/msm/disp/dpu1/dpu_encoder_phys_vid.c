@@ -41,7 +41,16 @@ static bool dpu_encoder_phys_vid_is_master(
 	return ret;
 }
 
-static void drm_mode_to_intf_timing_params(
+/*
+ * M2582: shared with the command-mode encoder.
+ *
+ * Nothing in this driver ever programs the interface's timing generator for a
+ * command-mode panel -- setup_timing_gen() is called from here only -- so
+ * INTF_TIMING_ENGINE_EN stays 0 and INTF_LINE_COUNT never leaves its reset
+ * value. On this target the command-mode path needs it; see
+ * dpu_encoder_phys_cmd_setup_timing_engine().
+ */
+void drm_mode_to_intf_timing_params(
 		const struct dpu_encoder_phys *phys_enc,
 		const struct drm_display_mode *mode,
 		struct dpu_hw_intf_timing_params *timing)
