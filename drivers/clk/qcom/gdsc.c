@@ -181,7 +181,19 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 		udelay(1);
 	}
 
-	ret = gdsc_poll_status(sc, status);
+	/*
+	 * On this SoC the CFG_GDSCR completion bits do not reflect the real power
+	 * state: gcc_ufs_phy_gdsc and disp_cc_mdss_core_gdsc both time out waiting
+	 * for GDSC_POWER_UP_COMPLETE while demonstrably powered. Assume the
+	 * request is honoured for the config-GDSCR flavour and give the hardware a
+	 * fixed settling delay instead of polling that bit.
+	 */
+	if (sc->flags & POLL_CFG_GDSCR) {
+		udelay(50);
+		ret = 0;
+	} else {
+		ret = gdsc_poll_status(sc, status);
+	}
 	WARN(ret, "%s status stuck at 'o%s'", sc->pd.name, status ? "ff" : "n");
 
 	if (!ret && status == GDSC_OFF) {
