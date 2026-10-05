@@ -15,8 +15,14 @@
  *     SE6  0xa98000  GIC SPI 363   gpio24/25   <- absent from the AP's map
  *     SE7  0xa9c000  GIC SPI 579   (uart7, declared in tuna.dtsi)
  *
- * The pin numbers are mainline's, from pinctrl-tuna.c, and do not match the
- * factory tree's. SE3 is the only instance the factory kernel enables.
+ * The pin numbers are mainline's, from pinctrl-tuna.c, and the factory tree's
+ * agree with them instance for instance: its SE0 is on gpio52/53, its SE5 on
+ * gpio12/13, its SE6 on gpio24/25. An earlier note here claimed the two tables
+ * were offset; that came from a scan which matched the string "gpio" in every
+ * pin property of each state node instead of the first, so the factory's SE0
+ * read back as gpio28/29. One block at a time gives gpio52/53. Nothing on this
+ * board is wired to SE0 or to any other bus in this wrapper -- see
+ * meizu-m2582-i2c.dtsi for where the devices actually are.
  *
  * Every instance needs both clocks named. qcom-geni-se.c takes "se" with
  * devm_clk_get() and "core" with devm_clk_get_optional() and enables both
@@ -24,9 +30,13 @@
  * succeeds on a NULL pointer, the QUP core stays unclocked, and the first
  * register read raises a synchronous external abort.
  *
- * None of them votes interconnect bandwidth yet: with a path configured the
- * probe aborts on that same read, without one the bus works. geni_icc_get()
- * treats the paths as optional, so leaving them out is legal.
+ * Every instance votes for the QUP core path as well. geni_icc_get() treats the
+ * paths as optional, which is a trap here: without a vote on
+ * MASTER_QUP_CORE_1 -> SLAVE_QUP_CORE_1 the wrap's QUP core clock is gated, and
+ * the first transfer through the controller then wedges the AXI bus. The paths
+ * were left out originally on the theory that configuring one made the probe
+ * abort; that abort was SE6's dead register window, which is a different
+ * problem and is documented below.
  */
 
 &qupv3_1 {
@@ -43,6 +53,11 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&qup_i2c0_sda>, <&qup_i2c0_scl>;
 		clocks = <&gcc GCC_QUPV3_WRAP1_S0_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
 		clock-names = "se", "core";
 		status = "disabled";
 	};
@@ -52,6 +67,11 @@
 		reg = <0 0x00a84000 0 0x4000>;
 		interrupts = <GIC_SPI 354 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&gcc GCC_QUPV3_WRAP1_S1_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
 		clock-names = "se", "core";
 		status = "disabled";
 	};
@@ -61,6 +81,11 @@
 		reg = <0 0x00a88000 0 0x4000>;
 		interrupts = <GIC_SPI 355 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&gcc GCC_QUPV3_WRAP1_S2_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
 		clock-names = "se", "core";
 		status = "disabled";
 	};
@@ -70,6 +95,11 @@
 		reg = <0 0x00a8c000 0 0x4000>;
 		interrupts = <GIC_SPI 356 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&gcc GCC_QUPV3_WRAP1_S3_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
 		clock-names = "se", "core";
 		status = "disabled";
 	};
@@ -79,6 +109,11 @@
 		reg = <0 0x00a90000 0 0x4000>;
 		interrupts = <GIC_SPI 357 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&gcc GCC_QUPV3_WRAP1_S4_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
 		clock-names = "se", "core";
 		status = "disabled";
 	};
@@ -100,6 +135,11 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&qup_i2c6_sda>, <&qup_i2c6_scl>;
 		clocks = <&gcc GCC_QUPV3_WRAP1_S6_CLK>, <&gcc GCC_QUPV3_WRAP1_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_1 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_1 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
 		clock-names = "se", "core";
 		status = "disabled";
 	};
@@ -179,23 +219,13 @@
 };
 
 /*
- * Pin numbering, kept for reference because it is easy to get wrong twice.
+ * The two dead windows, revisited.
  *
- * The factory tree puts qup1_se6_l0/l1 on gpio40/gpio41, while pinctrl-tuna.c
- * has them on gpio24/gpio25 and says so out loud when asked for the wrong one:
- *
- *     tuna-pinctrl f000000.pinctrl: invalid group "gpio40" for function "qup1_se6_l0"
- *
- * The full map in mainline's numbering is SE0 52/53, SE1 4/5, SE2 8/9,
- * SE3 60/61, SE4 16/17, SE5 12/13, SE6 24/25, SE7 28/29 -- the factory's SE0 is
- * on 28/29, which in our numbering is SE7, so the two tables are offset.
- *
- * The factory tree's clock IDs are its own as well: it writes <&gcc 0x58> for
- * SE6's SE clock, but 0x58 is 88, which in qcom,gcc-tuna.h is
- * GCC_QUPV3_WRAP2_IBI_CTRL_3_CLK, and its m-ahb/s-ahb values land on
- * GCC_SDCC2_APPS_CLK_SRC and GCC_UFS_PHY_AHB_CLK. Use our own header's names.
- *
- * Both of those matter, but neither was the cause of the abort -- correcting
- * them changed nothing, because the window itself was dead. See the note above
- * on the two dead windows.
+ * The abort was never about pin numbering or clock IDs. Both were suspected and
+ * both were disproved: the factory tree's pin numbers agree with mainline's
+ * (gpio52/53 for SE0, gpio24/25 for SE6), and its SE clock IDs agree too --
+ * <&gcc 0x59> for the bus this board runs is GCC_QUPV3_WRAP2_S0_CLK in
+ * qcom,gcc-tuna.h, and 0x6d/0x6e for its wrapper are
+ * GCC_QUPV3_WRAP_2_M/S_AHB_CLK. The abort was SE6's window not answering the
+ * AP at all, which is what the measurements above show.
  */
