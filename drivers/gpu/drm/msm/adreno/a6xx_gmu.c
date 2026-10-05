@@ -296,6 +296,17 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 	int ret;
 
 
+	/*
+	 * M2582 probe, temporary. a6xx_gmu_fw_start has just written 0 to
+	 * FW_INIT_RESULT ("to make sure we are getting a fresh value"), so at
+	 * this point the register should read 0. If it still reads 0x901, the
+	 * write never took effect -- which would mean the register is not
+	 * writable, or the block is not really reachable -- and 0x901 is a
+	 * hardware default rather than something the firmware produced.
+	 */
+	dev_warn(gmu->dev, "M2582 probe: FW_INIT_RESULT after the clear = %08x\n",
+		 gmu_read(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT));
+
 	val = gmu_read(gmu, REG_A6XX_GMU_CM3_DTCM_START + 0xff8);
 	if (val <= 0x20010004) {
 		mask = 0xffffffff;
@@ -306,6 +317,7 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 	}
 
 	gmu_write(gmu, REG_A6XX_GMU_CM3_SYSRESET, 1);
+
 
 	/* Set the log wptr index
 	 * note: downstream saves the value in poweroff and restores it here
@@ -1373,8 +1385,22 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
 
 	/* Check to see if we are doing a cold or warm boot */
 	if (adreno_is_a7xx(adreno_gpu) || adreno_is_a8xx(adreno_gpu)) {
-		status = a6xx_cx_misc_read(a6xx_gpu, REG_A7XX_CX_MISC_TCM_RET_CNTL) == 1 ?
-			GMU_WARM_BOOT : GMU_COLD_BOOT;
+		u32 tcm_ret = a6xx_cx_misc_read(a6xx_gpu,
+						REG_A7XX_CX_MISC_TCM_RET_CNTL);
+
+		status = tcm_ret == 1 ? GMU_WARM_BOOT : GMU_COLD_BOOT;
+		/*
+		 * M2582 probe, temporary. This board shows a splash screen, so the
+		 * bootloader has already brought the GPU up and loaded GMU
+		 * firmware by the time Linux runs. Whether mainline then warm- or
+		 * cold-boots the GMU decides whether our firmware image is used at
+		 * all, and the "Loaded GMU firmware v5.4.1" line cannot answer
+		 * that because it reads GMU_CORE_FW_VERSION from the hardware.
+		 */
+		dev_warn(gmu->dev,
+			 "M2582 probe: TCM_RET_CNTL=%u status=%s GMU_CORE_FW_VERSION=%08x\n",
+			 tcm_ret, status == GMU_WARM_BOOT ? "WARM" : "COLD",
+			 gmu_read(gmu, REG_A6XX_GMU_CORE_FW_VERSION));
 	} else if (gmu->legacy) {
 		status = gmu_read(gmu, REG_A6XX_GMU_GENERAL_7) == 1 ?
 			GMU_WARM_BOOT : GMU_COLD_BOOT;
