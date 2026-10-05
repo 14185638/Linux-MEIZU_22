@@ -151,6 +151,48 @@
 			#power-domain-cells = <1>;
 		};
 
+		/*
+		 * The GPU clock controller and the GX clock/power block. Both were
+		 * missing from this file while gpucc-tuna.c sat in the tree
+		 * unbuilt, which is why the GPU had no way to be clocked no matter
+		 * what the board file declared.
+		 *
+		 * Addresses, window sizes and the clock inputs come from the
+		 * board's factory device tree, which names the same blocks
+		 * "qcom,tuna-gpucc" and "qcom,tuna-gx_clkctl". The window is
+		 * 0x9800 because gpucc-tuna.c's regmap has max_register 0x964c;
+		 * a smaller window would truncate it.
+		 *
+		 * The two GPLL0 inputs are the ones gcc-tuna.c registers. The
+		 * driver used to ask for "gpll0_out_main"/"gpll0_out_main_div",
+		 * which nothing on this platform provides -- see the note in
+		 * gpucc-tuna.c.
+		 */
+		gpucc: clock-controller@3d90000 {
+			compatible = "qcom,tuna-gpucc";
+			reg = <0 0x03d90000 0 0x9800>;
+			clocks = <&bi_tcxo>,
+				 <&gcc GCC_GPU_GPLL0_CPH_CLK_SRC>,
+				 <&gcc GCC_GPU_GPLL0_DIV_CPH_CLK_SRC>;
+			clock-names = "bi_tcxo", "gcc_gpu_gpll0_cph_clk_src",
+				      "gcc_gpu_gpll0_div_cph_clk_src";
+			#clock-cells = <1>;
+			#reset-cells = <1>;
+			#power-domain-cells = <1>;
+		};
+
+		/*
+		 * The GX rail. Its GDSC is what the GPU core sits on, and it is
+		 * parented to gpucc's power domain, so this node has to follow
+		 * gpucc rather than be declared before it.
+		 */
+		gxclkctl: clock-controller@3d68024 {
+			compatible = "qcom,tuna-gx_clkctl";
+			reg = <0 0x03d68024 0 0x8>;
+			power-domains = <&gpucc 0>;
+			#power-domain-cells = <1>;
+		};
+
 		tcsrcc: clock-controller@1fbf000 {
 			compatible = "qcom,tuna-tcsrcc";
 			reg = <0 0x01fbf000 0 0x20>;
