@@ -1410,8 +1410,15 @@ static struct qcom_icc_bcm * const clk_virt_bcms[] = {
 	&bcm_qup2,
 };
 
+/*
+ * Virtual nodes have no MMIO registers, so they must not declare a regmap
+ * config: .config makes icc_rpmh_probe() ask for an MMIO resource,
+ * __devm_ioremap_resource() then rejects the NULL resource with -EINVAL and
+ * the provider fails to register. mc_virt matters beyond itself -- the
+ * display controller reaches EBI1 through it. sm8650.c declares the same
+ * two nodes without .config.
+ */
 static const struct qcom_icc_desc tuna_clk_virt = {
-	.config = &icc_regmap_config,
 	.nodes = clk_virt_nodes,
 	.num_nodes = ARRAY_SIZE(clk_virt_nodes),
 	.bcms = clk_virt_bcms,
@@ -1587,7 +1594,6 @@ static struct qcom_icc_bcm * const mc_virt_bcms[] = {
 };
 
 static const struct qcom_icc_desc tuna_mc_virt = {
-	.config = &icc_regmap_config,
 	.nodes = mc_virt_nodes,
 	.num_nodes = ARRAY_SIZE(mc_virt_nodes),
 	.bcms = mc_virt_bcms,

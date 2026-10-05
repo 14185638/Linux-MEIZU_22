@@ -156,42 +156,22 @@
 			reg = <0 0x01fbf000 0 0x20>;
 			#clock-cells = <1>;
 			/*
-			 * The TCSR block is closed to the non-secure kernel: merely
-			 * probing its clock driver stalls the AXI bus. The bootloader
-			 * has already enabled the clock reference gates it owns, so
-			 * they are modelled as fixed clocks below instead.
-			 *
-			 * M2582: leaving this disabled is load-bearing. Enabling it to
-			 * hand the eUSB2 PHY a "real" reference clock does not work --
-			 * the provider never comes up, the PHY's devm_clk_get() defers
-			 * forever, and the board loses USB entirely. The USB2 gate is
-			 * already open anyway (0x1fbf004 bit 0 reads 1 before we touch
-			 * it), so the fixed-clock stubs lose nothing.
+			 * The TCSR block is closed to the non-secure kernel -- merely probing its
+			 * clock driver stalls the AXI bus -- so the reference gates the bootloader
+			 * already opened are modelled as fixed clocks. Enabling it instead leaves
+			 * the provider absent, the eUSB2 PHY's devm_clk_get() deferred forever and
+			 * the board without USB.
 			 */
 			status = "disabled";
 		};
 
 		/*
-		 * The USB3 PHY's clock references.
-		 *
-		 * The factory node has two of them and a mux:
-		 *   ref_clk_src = <0x1b 0x97>   the TCSRCC-derived reference
-		 *   ref_clk     = <0x03>        the TCSR syscon reference
-		 *   pipe_clk_ext_src = mux(ref_clk_src, ref_clk)
-		 *
-		 * and its driver does, in msm_ssphy_qmp_enable_clks():
-		 *   clk_set_parent(pipe_clk_ext_src, ref_clk_src);   when bringing up
-		 *   clk_set_parent(pipe_clk_ext_src, ref_clk);       when taking down
-		 *
-		 * So the PHY's reference is ref_clk_src, routed through that mux. Both
-		 * live in the TCSR block, which is closed to the non-secure kernel
-		 * (probing its clock driver stalls the AXI bus), so they are modelled
-		 * as fixed clocks just like tcsr_ufs_clkref; the bootloader has already
-		 * enabled the gates because it runs USB itself for fastboot.
-		 *
-		 * mainline has no generic device-tree clock mux, so the mux is modelled
-		 * as a fixed-factor clock sourced from ref_clk_src, which is exactly the
-		 * parent the vendor driver selects.
+		 * The PHY's reference is ref_clk_src, taken from the TCSR syscon and
+		 * routed through the pipe_clk_ext_src mux that the vendor driver switches
+		 * between bring-up and teardown. TCSR is closed to the non-secure kernel,
+		 * so both are fixed clocks. mainline has no generic DT clock mux, so the
+		 * mux is a fixed-factor clock sourced from ref_clk_src -- the parent the
+		 * vendor driver selects.
 		 */
 		tcsr_usb3_clkref: tcsr-usb3-clkref {
 			compatible = "fixed-clock";
@@ -206,35 +186,12 @@
 		};
 
 		/*
-		 * M2582: the USB3 PHY wrapper's pipe clock, by the exact name the GCC
-		 * driver looks up.
-		 *
-		 * gcc-tuna.c takes this mux's parents by fw_name:
-		 *
-		 *   static const struct clk_parent_data gcc_parent_data_12[] = {
-		 *       { .fw_name = "usb3_phy_wrapper_gcc_usb30_pipe_clk" },
-		 *       { .fw_name = "bi_tcxo" },
-		 *       { .hw = &gcc_gpll0_out_even.clkr.hw },
-		 *   };
-		 *   gcc_usb3_prim_phy_pipe_clk_src -> .parent_data = gcc_parent_data_12
-		 *
-		 * and the GCC is a core clock controller that probes very early, long
-		 * before the QMP PHY. Pointing this entry at the PHY (as we did) means
-		 * the provider does not exist yet at lookup time, so parent 0 is NULL,
-		 * the mux selects nothing, and the whole PIPE chain reports rate 0 with
-		 * clk_round_rate() = -EINVAL -- measured exactly that:
-		 *
-		 *   M2582: pipe_clk before cur=0 round=-22 en=0
-		 *
-		 * With no PIPE clock the SuperSpeed link cannot train, which is why the
-		 * vendor's device comes up at SuperSpeed (usb 4-2, its clk_summary shows
-		 * this clock and its children at enable_cnt=1, rate 1000) while ours
-		 * only ever appears at High Speed (usb 3-2). Every PHY-side register is
-		 * already byte-identical to the vendor's, including PCS status 0x84, so
-		 * this clock chain is the remaining difference.
-		 *
-		 * The real source is the PHY's own PLL through the wrapper; 1000 Hz is
-		 * the placeholder rate the vendor's clock tree reports for it.
+		 * gcc-tuna.c looks this mux's parents up by fw_name, and GCC probes long
+		 * before the QMP PHY: pointing the entry at the PHY leaves parent 0 NULL,
+		 * the mux selects nothing and the PIPE chain reports rate 0 with
+		 * clk_round_rate() = -EINVAL. With no PIPE clock the link never trains
+		 * above High Speed, where the vendor's comes up at SuperSpeed. 1000 Hz is
+		 * the placeholder rate the vendor's clock tree reports.
 		 */
 		usb3_phy_wrapper_clk: usb3-phy-wrapper-clk {
 			compatible = "fixed-clock";
@@ -302,21 +259,12 @@
 			clock-names = "core_clk", "bus_aggr_clk", "iface_clk", "core_clk_unipro",
 				      "ref_clk", "tx_lane0_sync_clk", "rx_lane0_sync_clk", "rx_lane1_sync_clk";
 			/*
-			 * M2582: pin the UFS clocks instead of allowing dynamic scaling.
-			 *
-			 * A non-zero min/max range here makes the UFS core register a
-			 * devfreq device, and ufs_devfreq_scale() then calls
-			 * clk_set_rate() -> clk_core_get() -> of_parse_clkspec() ->
-			 * of_property_match_string() every 60 ms. That path oopses on this
-			 * board in __pi_strcmp with x8 = 0101010101010101, i.e. a corrupted
-			 * device-node pointer, roughly two seconds into boot. Collapsing
-			 * each range to a single value keeps the property present (so the
-			 * probe still finds it) while making scaling impossible.
-			 *
-			 * Pin to the TOP of the original range, not the bottom: at 100 MHz
-			 * the link does not work at all and every descriptor query fails
-			 * with -EIO, so the UFS is unusable. 403 MHz is the maximum the
-			 * range allowed and keeps the link at full speed with no scaling.
+			 * A non-zero min/max range makes the UFS core register a devfreq device,
+			 * and ufs_devfreq_scale() then walks of_parse_clkspec() every 60 ms -- a
+			 * path that oopses on this board in __pi_strcmp about two seconds into
+			 * boot. Collapsing each range to one value keeps the property present
+			 * while making scaling impossible. Pin to the top of the range: at 100 MHz
+			 * the link does not work at all.
 			 */
 			freq-table-hz = <403000000 403000000>, <0 0>, <0 0>, <403000000 403000000>,
 					<0 0>, <0 0>, <0 0>, <0 0>;
@@ -363,18 +311,11 @@
 		};
 
 		/*
-		 * EPSS -- the hardware block that actually runs CPU DVFS.
-		 *
-		 * The AP cannot change most rail voltages on this board: an RPMh vote
-		 * only lands if it agrees with what the firmware already programmed.
-		 * That is not a limitation to work around, it is where frequency and
-		 * voltage scaling happens instead -- this block steps the CPU supply
-		 * itself, and the OS only asks it for a frequency.
-		 *
-		 * The three register windows are the three frequency domains, and the
-		 * interrupts are the DCVS completion lines. Addresses, clocks and
-		 * interrupts are taken from the factory device tree for this board;
-		 * the layout matches sm8250's EPSS exactly, only the base differs.
+		 * EPSS runs CPU DVFS in hardware. An RPMh vote only lands if it agrees
+		 * with what the firmware already programmed, so frequency and voltage
+		 * scaling happen here rather than in the OS. Addresses, clocks and
+		 * interrupts are from the factory device tree; the layout matches
+		 * sm8250's EPSS, only the base differs.
 		 */
 		cpufreq_hw: cpufreq@17d91000 {
 			compatible = "qcom,cpufreq-epss";
@@ -446,9 +387,10 @@
 			compatible = "qcom,tuna-smmu-500", "qcom,smmu-500", "arm,mmu-500";
 			reg = <0 0x15000000 0 0x100000>;
 			/*
-			 * The bootloader leaves this SMMU live and translating for
-			 * UFS. Rewriting its SMRs and context banks from the
-			 * non-secure kernel hangs the bus, so inherit its state.
+			 * Removing this property takes the board down: black screen, no USB
+			 * enumeration, no console. The bootloader leaves this SMMU translating
+			 * for UFS and USB, and re-initialising every SMR and context bank from
+			 * the non-secure kernel breaks them. Verified as an isolated change.
 			 */
 			qcom,skip-reset;
 			#iommu-cells = <2>;
@@ -610,10 +552,9 @@
 		};
 
 		/*
-		 * AGGRE2 and MMSS NoCs sit in power-collapsed domains. Touching
-		 * their registers on an unpowered domain stalls the AXI bus, and
-		 * nothing in this bring-up DT consumes them (the display path,
-		 * the only MMSS user, is not brought up yet).
+		 * AGGRE2 sits in a power-collapsed domain. Touching its registers
+		 * while that domain is down stalls the AXI bus, and nothing in
+		 * this bring-up DT consumes it yet, so it stays off.
 		 */
 		aggre2_noc: interconnect@1700000 {
 			compatible = "qcom,tuna-aggre2-noc";
@@ -623,12 +564,19 @@
 			status = "disabled";
 		};
 
+		/*
+		 * The display path runs over this interconnect. While it is disabled the
+		 * interconnect core cannot resolve MASTER_MDP, so msm-mdss fails with
+		 * "error finding src node" and DPU, DSI, PHY and panel are never created
+		 * -- which is what left /dev/dri empty. It is safe to enable: the provider
+		 * is in MMCX, which is already up, and sm8650.dtsi declares no
+		 * power-domains for the same NoC either.
+		 */
 		mmss_noc: interconnect@1780000 {
 			compatible = "qcom,tuna-mmss-noc";
 			reg = <0 0x1780000 0 0x7d800>;
 			#interconnect-cells = <2>;
 			qcom,bcm-voters = <&apps_bcm_voter>;
-			status = "disabled";
 		};
 
 		gem_noc: interconnect@24100000 {

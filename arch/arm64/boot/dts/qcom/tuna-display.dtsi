@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 &soc {
+/*
+ * dispcc is a sibling of mdss, not a child of it: mdss takes its clocks from
+ * dispcc while dispcc takes two of its parents from the DSI PHY, so nesting
+ * dispcc inside mdss makes the device tree claim a cycle -- mdss cannot probe
+ * until dispcc exists, and dispcc cannot exist until its parent mdss has. The
+ * kernel spots this and refuses to bind either one, which is why /dev/dri
+ * stayed empty. sm8650.dtsi has exactly the same three blocks and keeps them
+ * all at the same level for the same reason.
+ */
 	dispcc: clock-controller@af00000 {
 		compatible = "qcom,tuna-dispcc";
 		reg = <0 0x0af00000 0 0x20000>;
@@ -25,6 +34,15 @@
 			 <&dispcc DISP_CC_MDSS_MDP_CLK>;
 		resets = <&dispcc DISP_CC_MDSS_CORE_BCR>;
 		power-domains = <&dispcc DISP_CC_MDSS_CORE_GDSC>;
+
+		/*
+		 * The DPU builds its address space through the apps SMMU; without this
+		 * msm_kms_init_vm() finds device_iommu_mapped() false on both the DPU and
+		 * its MDSS parent and returns -ENODEV, so the display never comes up.
+		 * Stream ID 0x800 is this SoC's display SID, taken from the factory
+		 * display device tree.
+		 */
+		iommus = <&apps_smmu 0x800 0x2>;
 		interconnects = <&mmss_noc MASTER_MDP QCOM_ICC_TAG_ALWAYS &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>,
 				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS &config_noc SLAVE_DISPLAY_CFG QCOM_ICC_TAG_ALWAYS>;
 		interconnect-names = "mdp0-mem", "cpu-cfg";
@@ -107,23 +125,67 @@
 					reg = <1>;
 					mdss_dsi0_out: endpoint {
 						remote-endpoint = <&panel_in>;
+
+						/*
+						 * msm_dsi_host_init() reads "data-lanes" from this endpoint and fails
+						 * with "failed to read lane data" if it is absent. Four lanes, 1:1,
+						 * matching the panel's DSILanes = 4 and lane_map_0123.
+						 */
+						data-lanes = <0 1 2 3>;
+
+						/*
+						 * The panel drives TE on TLMM GPIO 77, which the vendor muxes to
+						 * "mdp_vsync_p" and sources its tear-check block from
+						 * (qcom,panel-te-source = <0>). A command-mode panel that has not
+						 * started scanning produces no TE, so the DPU's tear block is driven
+						 * from the free-running watchdog timer instead; that removes the
+						 * dependency on the panel before the link is known to be up.
+						 */
+						qcom,te-source = "timer0";
 					};
 				};
 			};
 
-			panel@0 {
+			/*
+			 * The panel must stay a child of the DSI controller:
+			 * mipi_dsi_host_register() enumerates the bus with
+			 * for_each_available_child_of_node(dsi_node) and creates one
+			 * mipi_dsi_device per child that has a "reg" property. At the root
+			 * no device is created, the panel driver never probes, the DSI host
+			 * never registers as a component and DRM master waits forever -- no
+			 * /dev/dri, with no error reported anywhere.
+			 */
+			panel: panel@0 {
 				compatible = "meizu,m2582-vtdr6130a";
 				reg = <0>;
+
 				vddio-supply = <&vreg_ldob8>;
 				vci-supply = <&vreg_ldob19>;
 				vdd-supply = <&vreg_ldod3>;
 				reset-gpios = <&tlmm 14 GPIO_ACTIVE_LOW>;
+
+				/*
+				 * dpu_kms_dsi_set_te_source() matches this string against
+				 * dpu_vsync_sources[]. With it absent the DPU watches DPU_VSYNC_SOURCE_GPIO_0
+				 * instead -- the wrong pin -- and every commit ends in "frame done
+				 * timeout". The panel drives TE on TLMM GPIO 77, muxed to "mdp_vsync_p".
+				 */
+				/*
+				 * Pinctrl for the TE pin is not repeated here: the DPU
+				 * (ae01000.display-controller) already claims GPIO 77 with
+				 * the same mdp_te_default state. Requesting it a second
+				 * time from the panel fails with -EINVAL ("pin GPIO_77
+				 * already requested"), which takes the panel probe down and
+				 * with it the whole DRM device.
+				 */
+
 				port {
 					panel_in: endpoint {
 						remote-endpoint = <&mdss_dsi0_out>;
 					};
 				};
 			};
+
 		};
 
 		mdss_dsi0_phy: phy@ae95000 {
