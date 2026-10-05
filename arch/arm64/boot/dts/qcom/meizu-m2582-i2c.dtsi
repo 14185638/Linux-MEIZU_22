@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Meizu 22 (M2582) -- the I2C buses on qupv3 wrap 2, and the devices on them.
+ *
+ * Why this file exists: the board's I2C devices are not on the bus that is
+ * currently enabled. i2c0 (SE0 of wrap 1, pads gpio52/53) probes fine and
+ * answers nothing -- every address NAKs -- and it does so because SE0 of wrap 1
+ * is not the bus this board wires anything to.
+ *
+ * The board's own device tree overlay says which buses are wired. It is in the
+ * dtbo partition, and the matching one is index 71 of 81:
+ *
+ *     qcom,board-id  = <0x0b 0x01>      identical to the running vendor DT
+ *     meizu,board-id = <0x02 0x05>      and so is this
+ *
+ * (Overlays 65, 67 and 69 carry the same qcom,board-id but a different
+ * meizu,board-id, so they are sibling variants, not this board.)
+ *
+ * That overlay enables these buses, all of them in wrap 2:
+ *
+ *     qupv3_se8_i2c   @0x880000  gpio0/gpio1      aw20054_led@3a   LED driver
+ *     qupv3_se9_i2c   @0x884000  gpio179/gpio180  pmic2_i2c_et5907@35
+ *     qupv3_se10_i2c  @0x888000  gpio56/gpio57    batt_info@50     Meizu gauge
+ *     qupv3_se11_i2c  @0x88c000  gpio36/gpio37    pmic1_i2c_et5907@35
+ *
+ * and leaves the rest of the wrapper (SE12/SE13/SE15) disabled, which is what
+ * the nodes here do too.
+ *
+ * Two independent sources agree on every constant below, which is why they are
+ * trusted:
+ *
+ *   1. the overlay above (vendor tree, layer 2 in AGENTS.md terms);
+ *   2. tuna's own GCC and pinctrl drivers. The overlay's clocks are
+ *      <&gcc 0x59>, <&gcc 0x5b>, <&gcc 0x5d>, <&gcc 0x5f> for SE8..SE11 and
+ *      <&gcc 0x6d>, <&gcc 0x6e> for the wrapper, and those indices are exactly
+ *      GCC_QUPV3_WRAP2_S0..S3_CLK and GCC_QUPV3_WRAP_2_M/S_AHB_CLK in
+ *      qcom,gcc-tuna.h. Its pin numbers (gpio0/1 for SE8, gpio179/180 for SE9,
+ *      gpio56/57 for SE10, gpio36/37 for SE11) are exactly the pins
+ *      pinctrl-tuna.c gives to qup2_se0_l0/l1, qup2_se1_l0/l1, qup2_se2_l0/l1
+ *      and qup2_se3_l0/l1.
+ *
+ * The pin numbering question is settled by that second source. The earlier note
+ * in tuna-i2c.dtsi claiming the vendor's pin numbers do not line up with
+ * mainline's was wrong: it came from a scan that matched the string "gpio" in
+ * *every* pin property in each state node instead of the first one, so the
+ * vendor's SE0 read back as gpio28/29. Reading one blocks properly gives
+ * gpio52/53 for SE0, gpio12/13 for SE5, gpio24/25 for SE6 -- mainline's numbers
+ * exactly, for every instance in wrap 1 and wrap 2.
+ *
+ * No interconnect votes are declared, matching the working SE0 node: geni_icc_get()
+ * treats the paths as optional, and with one configured the probe aborts on its
+ * first register read.
+ */
+
+/*
+ * The interconnect votes are not optional after all.
+ *
+ * Without them the controller probes, the geni-i2c driver registers the
+ * adapter, /dev/i2c-N appears and funcs reports I2C_FUNC_I2C -- and then the
+ * first real transfer wedges the AXI bus and the board resets, with no panic
+ * and nothing in pstore, exactly the failure mode the wall clock warned about
+ * for a collapsed domain. Measured on i2c-0 probe of a single address: the
+ * board is gone within five seconds.
+ *
+ * The path that matters is the first one, MASTER_QUP_CORE_2 -> SLAVE_QUP_CORE_2
+ * on clk_virt. That pair is a clock domain masquerading as a bandwidth vote:
+ * voting any bandwidth on it is what makes the QUPV3 core clock for wrap 2
+ * actually run. Without a vote the core clock is not merely slow, it is gated,
+ * and a register access to a gated GENI block is what hangs the bus.
+ *
+ * Both the vendor overlay and upstream sm8750.dtsi declare this for every
+ * wrap-2 serial engine, and upstream declares it for wrap 1 as well. Nothing in
+ * wrap 1 votes today and its one enabled bus works, which is luck -- the
+ * bootloader happens to leave that core clock on. That is not something to rely
+ * on, so wrap 1 gets the same treatment below.
+ */
+
+&qupv3_2 {
+	/*
+	 * SE8's pads are gpio0/gpio1. pinctrl-tuna.c: qup2_se0_l0 -> gpio0,
+	 * qup2_se0_l1 -> gpio1.
+	 */
+	i2c8: i2c@880000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00880000 0 0x4000>;
+		interrupts = <GIC_SPI 373 IRQ_TYPE_LEVEL_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup2_i2c8_sda>, <&qup2_i2c8_scl>;
+		clocks = <&gcc GCC_QUPV3_WRAP2_S0_CLK>, <&gcc GCC_QUPV3_WRAP2_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_2 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
+		clock-names = "se", "core";
+		status = "disabled";
+	};
+
+	/* SE9: gpio179/gpio180 (qup2_se1_l0/l1). */
+	i2c9: i2c@884000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00884000 0 0x4000>;
+		interrupts = <GIC_SPI 583 IRQ_TYPE_LEVEL_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup2_i2c9_sda>, <&qup2_i2c9_scl>;
+		clocks = <&gcc GCC_QUPV3_WRAP2_S1_CLK>, <&gcc GCC_QUPV3_WRAP2_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_2 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
+		clock-names = "se", "core";
+		status = "disabled";
+	};
+
+	/* SE10: gpio56/gpio57 (qup2_se2_l0/l1). The board's fuel gauge is here. */
+	i2c10: i2c@888000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x00888000 0 0x4000>;
+		interrupts = <GIC_SPI 584 IRQ_TYPE_LEVEL_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup2_i2c10_sda>, <&qup2_i2c10_scl>;
+		clocks = <&gcc GCC_QUPV3_WRAP2_S2_CLK>, <&gcc GCC_QUPV3_WRAP2_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_2 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
+		clock-names = "se", "core";
+		status = "disabled";
+	};
+
+	/* SE11: gpio36/gpio37 (qup2_se3_l0/l1). */
+	i2c11: i2c@88c000 {
+		compatible = "qcom,geni-i2c";
+		reg = <0 0x0088c000 0 0x4000>;
+		interrupts = <GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup2_i2c11_sda>, <&qup2_i2c11_scl>;
+		clocks = <&gcc GCC_QUPV3_WRAP2_S3_CLK>, <&gcc GCC_QUPV3_WRAP2_CORE_CLK>;
+		interconnects = <&clk_virt MASTER_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS
+				 &clk_virt SLAVE_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS>,
+				<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+				 &config_noc SLAVE_QUP_2 QCOM_ICC_TAG_ALWAYS>;
+		interconnect-names = "qup-core", "qup-config";
+		clock-names = "se", "core";
+		status = "disabled";
+	};
+};
+
+&tlmm {
+	qup2_i2c8_sda: qup2-i2c8-sda-state {
+		pins = "gpio0";
+		function = "qup2_se0_l0";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c8_scl: qup2-i2c8-scl-state {
+		pins = "gpio1";
+		function = "qup2_se0_l1";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c9_sda: qup2-i2c9-sda-state {
+		pins = "gpio179";
+		function = "qup2_se1_l0";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c9_scl: qup2-i2c9-scl-state {
+		pins = "gpio180";
+		function = "qup2_se1_l1";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c10_sda: qup2-i2c10-sda-state {
+		pins = "gpio56";
+		function = "qup2_se2_l0";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c10_scl: qup2-i2c10-scl-state {
+		pins = "gpio57";
+		function = "qup2_se2_l1";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c11_sda: qup2-i2c11-sda-state {
+		pins = "gpio36";
+		function = "qup2_se3_l0";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	qup2_i2c11_scl: qup2-i2c11-scl-state {
+		pins = "gpio37";
+		function = "qup2_se3_l1";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+};

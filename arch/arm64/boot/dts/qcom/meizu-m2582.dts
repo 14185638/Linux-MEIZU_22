@@ -8,6 +8,7 @@
 #include "tuna-display.dtsi"
 #include "tuna-usb.dtsi"
 #include "tuna-i2c.dtsi"
+#include "meizu-m2582-i2c.dtsi"
 /*
  * The PMK8550 sits on the SPMI bus declared in tuna.dtsi. This brings in the
  * PMIC node, its SDAM2 (whose restart-reason field the bootloader reads to pick
@@ -253,6 +254,19 @@
 
 /* SE6 stays disabled: enabling it panics the board, see above. */
 &i2c6 { status = "disabled"; };
+
+/*
+ * The four buses that carry the board's I2C devices, from the vendor overlay
+ * (see meizu-m2582-i2c.dtsi for how that overlay was identified and why every
+ * constant in it could be cross-checked). Brought up one step at a time: the
+ * controllers first, with no child devices declared, so a probe failure is
+ * attributable to the bus and nothing above it. The devices follow once each
+ * address has been seen answering on the wire.
+ */
+&i2c8 { status = "okay"; };
+&i2c9 { status = "okay"; };
+&i2c10 { status = "okay"; };
+&i2c11 { status = "okay"; };
 
 /* Ordinary USB cable diagnostics: keep the unconnected UART disabled. */
 
