@@ -1186,20 +1186,6 @@ static int hw_init(struct msm_gpu *gpu)
 			return ret;
 	}
 
-	/*
-	 * M2582 bring-up gate, temporary. Everything above this point goes
-	 * through the GMU and touches no GPU register; everything below writes
-	 * GPU registers, which is the step that wedges this board. Returning
-	 * here proves the GMU half in isolation, and moving this block down
-	 * bisects the register writes one stage at a time. Delete once the GPU
-	 * comes up.
-	 */
-	if (IS_ENABLED(CONFIG_DRM_MSM_M2582_GPU_HW_INIT_GATE)) {
-		dev_warn(&gpu->pdev->dev,
-			 "M2582 gate: returning after gmu_set_oob, GPU registers untouched\n");
-		return 0;
-	}
-
 	/* Clear GBIF halt in case GX domain was not collapsed */
 	if (adreno_is_a619_holi(adreno_gpu)) {
 		gpu_write(gpu, REG_A6XX_GBIF_HALT, 0);
