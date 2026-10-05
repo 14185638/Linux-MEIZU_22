@@ -109,8 +109,22 @@ static const struct clk_parent_data gpu_cc_parent_data_0[] = {
 	{ .hw = &gpu_cc_pll0.clkr.hw },
 	{ .hw = &gpu_cc_pll0_out_even.clkr.hw },
 	{ .hw = &gpu_cc_pll0.clkr.hw },
-	{ .fw_name = "gpll0_out_main" },
-	{ .fw_name = "gpll0_out_main_div" },
+	/*
+	 * The two GPU GPLL0 branches that gcc-tuna.c actually registers. These
+	 * used to read "gpll0_out_main" and "gpll0_out_main_div", which nothing
+	 * on this platform provides: the only occurrences of those names in the
+	 * whole tree were these two lines. fw_name resolves against the
+	 * provider's registered clock names, so the GPU clock controller could
+	 * never have resolved its parents -- the names look like they came from
+	 * another SoC's gpucc file.
+	 *
+	 * gcc-tuna.c registers these two as "gcc_gpu_gpll0_cph_clk_src" and
+	 * "gcc_gpu_gpll0_div_cph_clk_src" (GCC_GPU_GPLL0_CPH_CLK_SRC and
+	 * GCC_GPU_GPLL0_DIV_CPH_CLK_SRC). The board device tree passes them by
+	 * index with matching clock-names, so the fw_name lookup finds them.
+	 */
+	{ .fw_name = "gcc_gpu_gpll0_cph_clk_src" },
+	{ .fw_name = "gcc_gpu_gpll0_div_cph_clk_src" },
 };
 
 static const struct freq_tbl ftbl_gpu_cc_gmu_clk_src[] = {
