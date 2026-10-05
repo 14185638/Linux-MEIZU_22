@@ -187,10 +187,33 @@
 		 * parented to gpucc's power domain, so this node has to follow
 		 * gpucc rather than be declared before it.
 		 */
-		gxclkctl: clock-controller@3d68024 {
-			compatible = "qcom,tuna-gx_clkctl";
-			reg = <0 0x03d68024 0 0x8>;
-			power-domains = <&gpucc 0>;
+		gxclkctl: clock-controller@3d64000 {
+			compatible = "qcom,tuna-gxclkctl";
+			/*
+			 * The block starts at 0x3d64000 and the GX GDSC register is
+			 * at offset 0x4024 inside it, which is the 0x3d68024 the
+			 * factory device tree names. Declaring the base as 0x3d68024
+			 * with a size of 8 -- as this node first did -- gives a
+			 * regmap whose offsets are counted from the wrong place, so
+			 * the driver would have read and written the wrong register
+			 * even once it matched.
+			 *
+			 * kaanapali.dtsi declares the same block the same way
+			 * (0x3d64000, size 0x6000), which is what this follows.
+			 */
+			reg = <0 0x03d64000 0 0x6000>;
+
+			/*
+			 * The GX rail's parents. RPMHPD_GFX and RPMHPD_GMXC are the
+			 * RPMh corners and gpucc's CX GDSC is the local one, same
+			 * three as kaanapali's node. Without these the rail has no
+			 * supply to switch, which matters because this is the domain
+			 * the GPU core comes up on.
+			 */
+			power-domains = <&rpmhpd RPMHPD_GFX>,
+					<&rpmhpd RPMHPD_GMXC>,
+					<&gpucc GPU_CC_CX_GDSC>;
+
 			#power-domain-cells = <1>;
 		};
 
