@@ -232,7 +232,7 @@ static int snps_eusb2_hsphy_set_mode(struct phy *p, enum phy_mode mode, int subm
  * shifted by four. Write the byte replicated across all four lanes instead, so
  * the hardware sees the same thing in every lane.
  */
-static void m2582_write_byte_rep(void __iomem *base, u32 offset, u8 val)
+static void snps_eusb2_hsphy_write_byte_rep(void __iomem *base, u32 offset, u8 val)
 {
 	writel_relaxed((u32)val * 0x01010101u, base + offset);
 }
@@ -245,7 +245,7 @@ static void m2582_write_byte_rep(void __iomem *base, u32 offset, u8 val)
  * anything -- which is consistent with an eUSB2 PLL that never locks even
  * though every value written matches the vendor's.
  */
-static int m2582_poll(void __iomem *base, u32 offset, u32 mask, bool want_set,
+static int snps_eusb2_hsphy_poll(void __iomem *base, u32 offset, u32 mask, bool want_set,
 		      int tries)
 {
 	int i;
@@ -490,11 +490,11 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		 */
 		r = readl_relaxed(phy->base + 0x94) | 0x2;
 		writel_relaxed(r, phy->base + 0x94);
-		m2582_poll(phy->base, 0x94, BIT(1), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x94, BIT(1), true, 1000);
 
 		r = readl_relaxed(phy->base + 0x50) | 0x2;
 		writel_relaxed(r, phy->base + 0x50);
-		m2582_poll(phy->base, 0x50, BIT(1), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x50, BIT(1), true, 1000);
 
 		/*
 		 * The vendor's settle: mov w0, #0xa7c6 ; __const_udelay, i.e. 42950
@@ -505,19 +505,19 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 
 		r = readl_relaxed(phy->base + 0x54) | 0x9;
 		writel_relaxed(r, phy->base + 0x54);
-		m2582_poll(phy->base, 0x54, 0x9, true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x54, 0x9, true, 1000);
 
 		r = readl_relaxed(phy->base + 0x130) | 0x4;
 		writel_relaxed(r, phy->base + 0x130);
-		m2582_poll(phy->base, 0x130, BIT(2), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x130, BIT(2), true, 1000);
 
 		r = readl_relaxed(phy->base + 0x98) & ~0x40;
 		writel_relaxed(r, phy->base + 0x98);
-		m2582_poll(phy->base, 0x98, BIT(6), false, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x98, BIT(6), false, 1000);
 
 		r = readl_relaxed(phy->base + 0xb8) | 0x1;
 		writel_relaxed(r, phy->base + 0xb8);
-		m2582_poll(phy->base, 0xb8, BIT(0), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0xb8, BIT(0), true, 1000);
 
 		/*
 		 * Reference-clock dependent branch. Our device tree reports 19.2 MHz
@@ -529,41 +529,41 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 			r |= 0x40;
 			writel_relaxed(r, phy->base + 0x54);
 
-			m2582_write_byte_rep(phy->base, 0x5c, 0xc8);
+			snps_eusb2_hsphy_write_byte_rep(phy->base, 0x5c, 0xc8);
 		} else {
 			r = readl_relaxed(phy->base + 0x54) & ~0x70;
 			writel_relaxed(r, phy->base + 0x54);
 
-			m2582_write_byte_rep(phy->base, 0x5c, 0x90);
-			m2582_write_byte_rep(phy->base, 0x60, 0x01);
+			snps_eusb2_hsphy_write_byte_rep(phy->base, 0x5c, 0x90);
+			snps_eusb2_hsphy_write_byte_rep(phy->base, 0x60, 0x01);
 		}
 
 		/* 0x60 &= ~0xf0, then 0x58 |= 0x2 (byte-replicated writes) */
-		m2582_write_byte_rep(phy->base, 0x60,
+		snps_eusb2_hsphy_write_byte_rep(phy->base, 0x60,
 				     (u8)(readl_relaxed(phy->base + 0x60) & ~0xf0));
-		m2582_write_byte_rep(phy->base, 0x58,
+		snps_eusb2_hsphy_write_byte_rep(phy->base, 0x58,
 				     (u8)(readl_relaxed(phy->base + 0x58) | 0x2));
 
 		/* PLL integer / GMP control, each step confirmed like the vendor */
 		r = readl_relaxed(phy->base + 0x68) | 0x20;
 		writel_relaxed(r, phy->base + 0x68);
-		m2582_poll(phy->base, 0x68, BIT(5), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x68, BIT(5), true, 1000);
 
 		r = readl_relaxed(phy->base + 0x68) | 0x1;
 		writel_relaxed(r, phy->base + 0x68);
-		m2582_poll(phy->base, 0x68, BIT(0), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x68, BIT(0), true, 1000);
 
 		/* PLL proportional / VCO control */
 		r = readl_relaxed(phy->base + 0x6c) | 0x10;
 		writel_relaxed(r, phy->base + 0x6c);
-		m2582_poll(phy->base, 0x6c, BIT(4), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x6c, BIT(4), true, 1000);
 
 		r = readl_relaxed(phy->base + 0x70) & ~0x7;
 		writel_relaxed(r, phy->base + 0x70);
 
 		r = readl_relaxed(phy->base + 0x6c) | 0x40;
 		writel_relaxed(r, phy->base + 0x6c);
-		m2582_poll(phy->base, 0x6c, BIT(6), true, 1000);
+		snps_eusb2_hsphy_poll(phy->base, 0x6c, BIT(6), true, 1000);
 
 		/* HS_PHY_CTRL2 bits[3:2], then the vendor's tail */
 		r = readl_relaxed(phy->base + 0x64) | 0xc;
@@ -615,74 +615,10 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		return ret;
 
 	/*
-	 * M2582: the vendor's TUNA-specific data-path tuning, transcribed from
-	 * the disassembly of phy-msm-snps-eusb2.ko's msm_eusb2_phy_init().
-	 *
-	 * The vendor branches on the reference clock rate and writes registers
-	 * that mainline never touches at all:
-	 *
-	 *   ref = 19200000 (ours):
-	 *       +0x54 &= ~0x70
-	 *       +0x5c  = (old & ~0xff) | 0x90
-	 *       +0x60  = (old & ~0xf)  | 0x1
-	 *   ref = 38400000:
-	 *       +0x54 &= ~0x8f ; +0x54 |= 0x40
-	 *       +0x5c  = (old & ~0xff) | 0xc8
-	 *
-	 *   both:  +0x60 &= ~0xf0 ; +0x58 |= 0x2 ; +0x7c &= ~0x7
-	 *
-	 * qcom_eusb2_ref_clk_init() only programs 0x54's FSEL and the CFG_CTRL_2/3
-	 * PLL dividers, so 0x5c, 0x60, 0x58 and 0x7c were left at their reset
-	 * values. The symptom of that is exactly what this board shows: the link
-	 * state machine works (RESET/CONNECT_DONE/SUSPEND all arrive) but no packet
-	 * ever reaches the core, so EP0 never raises XferNotReady(Setup) and no
-	 * endpoint event is ever generated.
-	 *
-	 * 0x58 is also the register the factory device tree patches through
-	 * qcom,param-override-seq = <0x00 0x58>.
-	 */
-	/*
-	 * M2582: DISABLED -- this "vendor datapath tune" writes values that do not
-	 * match the vendor's working PHY, and on two registers it actively destroys
-	 * a state that was already correct.
-	 *
-	 * Measured, side by side (our post-write readback vs the live registers read
-	 * from inside the running vendor kernel):
-	 *
-	 *   reg    our pre-init   after this tune   vendor live (working)
-	 *   0x54   09             06                4b
-	 *   0x58   02             02                00
-	 *   0x5c   c8             09                 c8     <- vendor == our pre-init
-	 *   0x60   00             01                 00     <- vendor == our pre-init
-	 *   0x64   07             15                 17
-	 *
-	 * On 0x5c and 0x60 the vendor's healthy state is exactly what the PHY
-	 * already has before this block runs, so the block is a regression: it
-	 * overwrites a correct configuration with different values. It is also a
-	 * late addition to this driver, which fits the observation that the board
-	 * enumerated once at 09:58 and never did again.
-	 *
-	 * Leave the PHY as mainline left it. Re-enable only with fresh evidence that
-	 * one of these values is genuinely needed, and change one register at a time.
-	 */
-	/*
-	 * M2582: write the vendor's LIVE register values, read out of its running
-	 * kernel, and log what the PHY had before.
-	 *
-	 * With the tune block above disabled the PHY keeps its pre-init state, which
-	 * already matches the vendor on 0x5c (c8) and 0x60 (00). Four registers are
-	 * still different, and the host's "new high-speed device ... then new
-	 * full-speed device" flip-flop is what an incorrectly configured USB2 analog
-	 * front end looks like:
-	 *
-	 *   reg    ours   vendor live
-	 *   0x54   09     4b
-	 *   0x58   00     00
-	 *   0x64   07     17
-	 *   0x68   ?      21
-	 *
-	 * Write exactly the vendor's values and see whether the link then holds high
-	 * speed long enough to answer GET_DESCRIPTOR.
+	 * Write the register values the vendor's PHY ends up with: 0x5c and 0x60
+	 * already match, and these four are the ones this driver leaves
+	 * different. A byte write is used because the register file replicates an
+	 * 8-bit value across all four lanes.
 	 */
 	{
 		static const struct { u8 off, val; } v[] = {
@@ -691,19 +627,8 @@ static int qcom_snps_eusb2_hsphy_init(struct phy *p)
 		int k;
 
 		for (k = 0; k < ARRAY_SIZE(v); k++)
-			m2582_write_byte_rep(phy->base, v[k].off, v[k].val);
+			snps_eusb2_hsphy_write_byte_rep(phy->base, v[k].off, v[k].val);
 	}
-
-	/*
-	 * Deliberately no vendor-style "datapath tune" here.
-	 *
-	 * A verbatim transcription of the vendor's tuning sequence (its own
-	 * clk_get_rate(ref_clk) branch plus the register tail) was carried in an
-	 * `if (0)` while the reference clock question was open. It is gone now:
-	 * the board's tcsr-usb2-clkref is 38.4 MHz and the override pairs above
-	 * are what the vendor's own live register values correspond to, so the
-	 * second, conflicting sequence has no reason to exist in the tree.
-	 */
 
 	snps_eusb2_hsphy_write_mask(phy->base, QCOM_USB_PHY_CFG_CTRL_1,
 				    PHY_CFG_PLL_CPBIAS_CNTRL_MASK,

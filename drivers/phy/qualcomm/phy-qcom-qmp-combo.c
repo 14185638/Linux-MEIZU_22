@@ -3983,17 +3983,11 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 		return 0;
 
 	/*
-	 * DO NOT ioremap the GCC's USB3 BCR block (0x50000..0x5001c) and poke
-	 * it. It is secure-only from the non-secure kernel: reading it raises a
-	 * synchronous external abort and panics the board:
-	 *
-	 *     M2582: SS PHY PRE-INIT ... 018=01010101 01c=0a0a0a0a
-	 *     Internal error: synchronous external abort: 0000000096000010
-	 *     pc : qmp_combo_com_init+0x1bc/0xdec
-	 *
-	 * The same is true of the TCSR block, which is why the QMP driver pries
-	 * its gates open with a raw ioremap only where that was verified to
-	 * work. Reset lines have to go through reset_control, not raw writes.
+	 * The GCC's USB3 BCR block (0x50000..0x5001c) must not be ioremapped and
+	 * poked: it is secure-only from the non-secure kernel and reading it
+	 * raises a synchronous external abort. Reset lines therefore have to go
+	 * through reset_control rather than raw writes. The TCSR block is
+	 * equally restricted, hence the raw ioremap of its gates only.
 	 */
 	ret = regulator_bulk_enable(cfg->num_vregs, qmp->vregs);
 	if (ret) {
@@ -4027,67 +4021,12 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	}
 
 	/*
-	 * M2582: do not assert the PHY resets, only release them.
-	 *
-	 * The vendor driver (phy-msm-ssusb-qmp.ko) does exactly this: in
-	 * msm_ssphy_qmp_init() it writes a zero to a reset-override register and
-	 * then calls reset_control_deassert() on both reset lines -- there is no
-	 * reset_control_assert() anywhere in its init path. Disassembly:
-	 *
-	 *   898: mov  w0, wzr
-	 *   89c: bl   writel_relaxed
-	 *   8a4: bl   reset_control_deassert     ; first line
-	 *   8b0: bl   reset_control_deassert     ; second line
-	 *
-	 * mainline asserts both first. On this board the bootloader has already
-	 * brought the PHY up (it runs USB itself for fastboot), so asserting the
-	 * BCRs again puts it into a state it does not come back from, which is
-	 * consistent with a register window that answers but never reports ready.
-	 */
-	/*
-	 * M2582: pulse the resets the way the vendor does.
-	 *
-	 * msm_ssphy_qmp_init() does not merely release the reset lines -- it drives
-	 * three assert/deassert pulse groups:
-	 *
-	 *   840: reset_control_assert           84c: reset_control_assert
-	 *   858: reset_control_deassert         864: reset_control_deassert
-	 *   87c: reset_control_assert           888: reset_control_assert
-	 *   8a4: reset_control_deassert         8b0: reset_control_deassert
-	 *   8c8: reset_control_assert           8d4: reset_control_deassert
-	 *
-	 * mainline only ever deasserts. That the pulse matters on this part is not
-	 * speculation: the eUSB2 PHY stopped the board booting entirely when its
-	 * reset pulse was removed, and it had to be restored.
-	 *
-	 * Without a pulse the PHY's register file stays inert -- every block reads a
-	 * static replicated-byte value and ignores writes completely, which survives
-	 * all eight clocks running (aux, cfg_ahb, ref, com_aux, pipe_clk_mux=125 MHz,
-	 * pipe_clk_ext_src, ref_clk_src) and the 1.8 V vdd rail being correct.
-	 */
-	/*
-	 * M2582: the vendor's THREE-pulse reset sequence, replicated exactly.
-	 *
-	 * msm_ssphy_qmp_init() drives the two reset lines in groups, not once:
-	 *
-	 *   840 assert(g) 84c assert(p)   858 deassert(g) 864 deassert(p)
-	 *   87c assert(g) 888 assert(p)   8a4 deassert(g) 8b0 deassert(p)
-	 *   8c8 assert(g)                 8d4 deassert(g)
-	 *   978 deassert(...)
-	 *
-	 * Everything else about this PHY now matches the working stack -- eight
-	 * clocks running, the 1.8 V rail on, the GDSC on, the 165-entry table
-	 * identical -- yet in our kernel the block answers reads with zeros and
-	 * discards every write, while the same addresses read c0c0c0c0 and accept
-	 * writes inside the vendor kernel (module m2582_peek: "WRITETEST
-	 * c0c0c0c0 -> a5a5a5a5 ACCEPTED").
-	 *
-	 * The status register com+0x00 reads 0x03 in the vendor kernel and 0x01
-	 * here, and it is READ-ONLY (the write map shows 0x0000 rejecting writes
-	 * while 0x0010 accepts them), so that difference is the COM reset state
-	 * machine reporting "not ready" rather than something we can set. The one
-	 * input that drives that machine is the reset sequence, and we had been
-	 * issuing a single pulse.
+	 * The two reset lines are driven as three assert/deassert pulse groups,
+	 * the way the vendor driver drives them, instead of the single release
+	 * mainline performs. The bootloader has already brought the PHY up (it
+	 * runs USB for fastboot), and without the pulses the register file stays
+	 * inert: every block reads back a static replicated byte and discards
+	 * writes, even with all clocks and regulators enabled.
 	 */
 	{
 		int i;
@@ -4245,45 +4184,9 @@ static int qmp_combo_com_init(struct qmp_combo *qmp, bool force)
 	qphy_clrbits(com, QPHY_V3_DP_COM_SW_RESET, SW_RESET);
 
 	/*
-	 * M2582: set bit 1 of the COM block's first register.
-	 *
-	 * This is the difference the ground truth finally exposed. Read from inside
-	 * the WORKING vendor kernel (module m2582_peek, built against its own
-	 * /proc/config.gz and loaded through KernelSU -- the only route left, since
-	 * /dev/mem is off, /proc/kcore is absent, the SS PHY has no debugfs, iotrace
-	 * is not built in, raw ioremap of GCC/TCSR is secure-only and the signed EDL
-	 * loader has no peek):
-	 *
-	 *     vendor: com 088e8000 = 0x03   serdes 088e9000 = 0xc0   pcs_usb 088e9f00 = 0x68
-	 *     ours:   com 088e8000 = 0x01   serdes 088e9000 = 0x00   pcs_usb 088e9f00 = 0x7f
-	 *
-	 * The vendor's serdes values are exactly the 165-entry table (0xc0, 0x01,
-	 * 0x16, 0x36, 0x04 ...); ours are all zero. The COM block is this PHY's
-	 * common/power control, and we are one bit short of what the working driver
-	 * leaves there. That single bit is consistent with everything measured: an
-	 * unpowered serdes block reads zero, silently discards writes, and leaves the
-	 * PLL dead.
-	 */
-	/*
-	 * M2582: com+0x00 is a READ-ONLY status register, com+0x10 is the writable
-	 * control -- established by a controlled experiment inside the WORKING
-	 * vendor kernel (module m2582_peek):
-	 *
-	 *   write map:  0000:03030303          (no write accepted)
-	 *               0010:03030303 !WRITABLE
-	 *               1000:c0c0c0c0 !WRITABLE  1004:01010101 !WRITABLE
-	 *               1600:00000000 !WRITABLE  1f00:68686868 !WRITABLE
-	 *               1f08:c0c0c0c0 !WRITABLE  1f18:f8f8f8f8 !WRITABLE
-	 *   write test: serdes+1000 c0c0c0c0 -> a5a5a5a5 ACCEPTED
-	 *
-	 * and in our kernel every one of those addresses discards writes, while
-	 * com+0x00 reads 0x01 here against the vendor's 0x03 -- i.e. that register
-	 * reports the PHY as not ready rather than being something we can set.
-	 * com+0x10 is the control we had never touched: the vendor leaves 0x03
-	 * there, we read 0x1b.
-	 *
-	 * (An earlier attempt set bit 1 of com+0x00; that register ignores writes,
-	 * so it could not have had any effect.)
+	 * com+0x00 is a read-only status register reporting the COM reset state
+	 * machine, so it cannot be set. com+0x10 is the writable control
+	 * register, and the vendor driver leaves bits 0 and 1 set there.
 	 */
 	qphy_setbits(com, 0x10, BIT(0) | BIT(1));
 
@@ -5311,13 +5214,6 @@ static int qmp_combo_parse_dt(struct qmp_combo *qmp)
 
 	qmp->serdes = base + offs->usb3_serdes;
 
-	/*
-	 * M2582: do not write probe values into the PHY from here -- it is live
-	 * configuration. The write tests that used to live here served their
-	 * purpose: with the clocks running the block accepts writes, and after
-	 * power_on every serdes value matches the vendor's working kernel byte for
-	 * byte.
-	 */
 	qmp->pcs_misc = base + offs->usb3_pcs_misc;
 	qmp->pcs = base + offs->usb3_pcs;
 	if (offs->usb3_pcs_aon)

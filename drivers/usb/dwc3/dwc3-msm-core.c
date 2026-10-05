@@ -3033,35 +3033,13 @@ int msm_ep_update_ops(struct usb_ep *ep)
 
 	(*new_ep_ops) = (*ep->ops);
 	/*
-	 * M2582: do NOT take over .queue.
-	 *
-	 * This used to be
-	 *
-	 *     new_ep_ops->queue = dwc3_msm_ep_queue;
-	 *
-	 * and that function hands every non-EBC endpoint to the DBM:
-	 *
-	 *     if (mdwc->hw_eps[dep->number].mode == USB_EP_EBC)
-	 *             ret = __dwc3_msm_ebc_ep_queue(dep, req);
-	 *     else
-	 *             ret = __dwc3_msm_dbm_ep_queue(dep, req);
-	 *
-	 * __dwc3_msm_dbm_ep_queue() builds TRBs in the DBM's own format
+	 * Do not take over .queue: dwc3_msm_ep_queue() hands every non-EBC
+	 * endpoint to the DBM, which builds TRBs in the DBM's own format
 	 * (DBM_TRB_BIT | DBM_TRB_DMA | DBM_TRB_EP_NUM) and issues STARTTRANSFER
-	 * against them. On this board the DBM never works: its registers read back
-	 * as zero whatever is written, with DBM_EN clear or set, so the core is
-	 * handed TRBs it cannot use and nothing is ever transferred. EP0's setup
-	 * TRB therefore never reaches the core, the core never raises
-	 * XferNotReady(Setup), and no endpoint event is generated at all --
-	 * measured, with the probe on the very first line of
-	 * dwc3_endpoint_interrupt: count: 0. The host's GET_DESCRIPTOR and
-	 * SET_ADDRESS then go unanswered (error -71) while the link itself attaches
-	 * fine at high speed.
-	 *
-	 * Leaving .queue alone keeps the stock dwc3_gadget_ep_queue(), which is what
-	 * every other DWC3 platform in this kernel uses and which does not depend on
-	 * the DBM at all. Only .enable is still overridden; that path does not touch
-	 * the DBM.
+	 * against them, so the core is handed TRBs it cannot use. Leaving .queue
+	 * alone keeps the stock dwc3_gadget_ep_queue(), which does not depend on
+	 * the DBM at all. Only .enable is still overridden; that path does not
+	 * touch the DBM.
 	 */
 	new_ep_ops->enable = dwc3_msm_ep_enable;
 
@@ -3659,31 +3637,11 @@ static void dwc3_msm_block_reset(struct dwc3_msm *mdwc, bool core_reset)
 	 * event buffers that dwc3_event_buffers_setup() already programmed.
 	 */
 	/*
-	 * M2582: ENABLE the DBM, which is what the vendor's driver does and what
-	 * this driver's own queuing path requires.
-	 *
-	 * An earlier attempt disabled DBM_EN here, because the DBM registers did
-	 * not respond and an enabled-but-unconfigured DBM produced a repeating
-	 * 0x00009001 event pattern. That reasoning missed the other half of the
-	 * picture: dwc3_msm_ep_queue() routes every non-EBC endpoint through the
-	 * DBM unconditionally --
-	 *
-	 *     if (mdwc->hw_eps[dep->number].mode == USB_EP_EBC)
-	 *             ret = __dwc3_msm_ebc_ep_queue(dep, req);
-	 *     else
-	 *             ret = __dwc3_msm_dbm_ep_queue(dep, req);
-	 *
-	 * so with DBM_EN clear nothing is ever handed to the core. EP0's setup TRB
-	 * never gets queued, the core therefore never raises XferNotReady(Setup),
-	 * no endpoint event reaches the gadget at all -- measured: count: 0 in
-	 * dwc3_endpoint_interrupt, which is instrumented at its very first line --
-	 * and the host's GET_DESCRIPTOR and SET_ADDRESS go unanswered (error -71)
-	 * even though the link itself attaches at high speed.
-	 *
-	 * The stale configuration from the bootloader's fastboot session, which is
-	 * what made the DBM look dead, is cleared just above. Enable it now, before
-	 * anything programs its event buffer, and let dbm_event_buffer_config()
-	 * point it at the buffer dwc3_event_buffers_setup() allocated.
+	 * Enable the DBM, as the vendor driver does. The stale configuration the
+	 * bootloader's fastboot session left behind, cleared just above, is what
+	 * previously made the block look dead. Enable it before anything
+	 * programs its event buffer, so that dbm_event_buffer_config() points it
+	 * at the buffer dwc3_event_buffers_setup() allocated.
 	 */
 	dwc3_msm_write_reg_field(mdwc->base, QSCRATCH_GENERAL_CFG,
 		DBM_EN_MASK, 0x1);
@@ -6216,7 +6174,7 @@ static int dwc3_msm_parse_core_params(struct dwc3_msm *mdwc, struct device_node 
 		if (!mdwc->hs_phy)
 			return -ENOMEM;
 		mdwc->hs_phy->dev = mdwc->dev;
-		mdwc->hs_phy->label = "m2582-hs-standin";
+		mdwc->hs_phy->label = "hs-phy-standin";
 	}
 
 	phy_node = of_parse_phandle(dwc3_node, "usb-phy", 1);
@@ -6227,7 +6185,7 @@ static int dwc3_msm_parse_core_params(struct dwc3_msm *mdwc, struct device_node 
 		if (!mdwc->ss_phy)
 			return -ENOMEM;
 		mdwc->ss_phy->dev = mdwc->dev;
-		mdwc->ss_phy->label = "m2582-ss-standin";
+		mdwc->ss_phy->label = "ss-phy-standin";
 	}
 
 	/* Populate USB repeater version for TD 9.23 WA */
@@ -7952,7 +7910,6 @@ module_exit(dwc3_msm_exit);
  * CONFIG_ANDROID_USB_CONFIGFS_UEVENT, which mainline does not have). They are
  * only wired into dev_pm_ops, so returning "no objection" is correct.
  */
-/* M2582: pm-ops stubs */
 static void dwc3_host_complete(struct device *dev) { }
 static int dwc3_host_prepare(struct device *dev) { return 0; }
 static int dwc3_core_prepare(struct device *dev) { return 0; }

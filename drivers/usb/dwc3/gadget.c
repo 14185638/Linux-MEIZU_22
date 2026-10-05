@@ -159,12 +159,11 @@ static void dwc3_ep0_reset_state(struct dwc3 *dwc)
 	}
 
 	/*
-	 * M2582: this branch used to do nothing at all, which leaves EP0 unarmed
-	 * after a USB reset -- but re-arming here is *too early*: the reset has
-	 * made the core reclaim EP0's resource, so STARTTRANSFER fails with
-	 * "No resource for ep0out" (-EINVAL) until __dwc3_gadget_ep_enable() has
-	 * run again. The re-arm now happens at the end of the connect-done
-	 * handler instead, once EP0 has its resource back.
+	 * EP0 is not re-armed here: the USB reset has made the core reclaim
+	 * EP0's resource, so STARTTRANSFER fails with -EINVAL ("No resource for
+	 * ep0out") until __dwc3_gadget_ep_enable() has run again. The re-arm
+	 * happens at the end of the connect-done handler instead, once EP0 has
+	 * its resource back.
 	 */
 }
 
@@ -2854,22 +2853,6 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	else
 		ret = dwc3_gadget_soft_connect(dwc);
 
-	/*
-	 * M2582: record what the core looks like immediately after each pullup
-	 * transition.
-	 *
-	 * The connect-done lines in the log show dctl=901f0000, i.e. bit 31
-	 * (DWC3_DCTL_RUN_STOP) set -- a stopped device core. Those lines are
-	 * historical though: this script binds, unbinds and rebinds the UDC, so an
-	 * early one may well predate the final bind. What matters is the state the
-	 * final pullup(1) leaves behind, because a stopped core does not raise
-	 * EP0/SETUP events and the host then reports
-	 *
-	 *     usb 3-2: device descriptor read/64, error -71
-	 *     usb 3-2: Device not responding to setup address.
-	 *
-	 * exactly as observed, with the gadget bound and the link at high speed.
-	 */
 	pm_runtime_put(dwc->dev);
 
 	return ret;
@@ -3081,11 +3064,8 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	 *
 	 *     dwc3 { extcon = <&...>; usb-role-switch; dr_mode = "otg"; ... }
 	 *
-	 * The symptom matches exactly. The on-screen log shows the configfs bind
-	 * succeeding ("late bind UDC rc=0") and then no M2582: pullup line at
-	 * all -- not a delayed one, not a failed one, none -- and the UDC reports
-	 * "not attached" for the rest of the boot, while the host only enumerates
-	 * about 40 s later through some other path.
+	 * Without it the UDC stays "not attached" for the rest of the boot even
+	 * though the configfs bind succeeds.
 	 *
 	 * Setting it here is just in time: udc_bind_to_driver() calls udc_start()
 	 * (this function) and then usb_udc_connect_control() immediately after.
@@ -3976,21 +3956,12 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 	case DWC3_DEPEVT_RXTXFIFOEVT:
 		break;
 	default:
-		/* M2582: this fires hundreds of times a second while no gadget driver
-		 * is bound; printing each one starves the console and delays the
-		 * userspace gadget setup that would stop it. */
-		{
-			/* M2582: print the raw event word. If it is exactly zero then
-			 * the core raised the interrupt but wrote nothing into the
-			 * buffer, which points at a DMA address/coherency mismatch
-			 * rather than at the event decoding. */
-			const u32 *raw = (const u32 *)event;
-			u32 count = dwc3_readl(dwc->regs, DWC3_GEVNTCOUNT(0));
-
-			dev_err_ratelimited(dwc->dev,
-					    "unknown endpoint event %d raw=%08x evtcount=%08x\n",
-					    event->endpoint_event, *raw, count);
-		}
+		/*
+		 * This fires repeatedly while no gadget driver is bound, so keep
+		 * it rate limited to avoid starving the console.
+		 */
+		dev_err_ratelimited(dwc->dev, "unknown endpoint event %d\n",
+				    event->endpoint_event);
 		break;
 	}
 }
@@ -4434,29 +4405,10 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 	 */
 
 	/*
-	 * M2582: this repair is needed ONCE, not on every connect-done.
-	 *
-	 * Connect-done fires repeatedly -- the log shows it several times inside a
-	 * few milliseconds -- and every repeat used to force an ENDTRANSFER and a
-	 * stall-and-restart on EP0. That aborts whatever control transfer EP0 is in
-	 * the middle of, which is precisely what the host reports when it says
-	 *
-	 *     usb 3-2: Device not responding to setup address.
-	 *     usb 3-2: device not accepting address 29, error -71
-	 *
-	 * while issuing SET_ADDRESS. The PHY is now verified good (serdes matches
-	 * the vendor byte for byte and accepts writes; the host sees the device at
-	 * high speed), so the only remaining problem is that we keep yanking EP0 out
-	 * from under the enumeration. Do the resource release on the first
-	 * connect-done and then leave EP0 alone.
-	 */
-	/*
-	 * M2582: run this on EVERY connect-done, not once.
-	 *
-	 * Gating it to a single run was a regression: the board enumerated
-	 * successfully at 09:58 with the ungated version, and afterwards the host
-	 * stopped getting any answer at all. EP0 evidently needs the resource
-	 * release and restart on each connect, not just the first.
+	 * Run this on every connect-done, not just the first: connect-done fires
+	 * repeatedly during enumeration and EP0 needs the resource release and
+	 * restart on each one. Gating it to a single run leaves the host with no
+	 * answer at all.
 	 */
 	{
 		struct dwc3_gadget_ep_cmd_params p = { };

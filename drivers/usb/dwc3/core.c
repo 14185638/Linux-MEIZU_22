@@ -1316,20 +1316,10 @@ static int dwc3_core_init(struct dwc3 *dwc)
 	ret = dwc3_phy_init(dwc);
 
 	/*
-	 * M2582: GUSB3PIPECTL0.SUSPHY must be clear for the SuperSpeed PHY to be
-	 * accessible.
-	 *
-	 * Ground truth from inside the working vendor kernel (module m2582_peek):
-	 *
-	 *     vendor: GUSB3PIPECTL0 (0xa60c2c0) = 030c1002   bit 17 (SUSPHY) = 0
-	 *     ours:   GUSB3PIPECTL0 (0xa60c2c0) = 030e1002   bit 17 (SUSPHY) = 1
-	 *     vendor: serdes 088e9000 = c0c0c0c0, write test ACCEPTED
-	 *     ours:   serdes 088e9000 = 00000000, write test DISCARDED
-	 *
-	 * A suspended PHY answers reads with zeros and discards writes, which is
-	 * exactly what our kernel sees, and it is why the eUSB2 PLL never locked and
-	 * why none of the 165 table entries took. dwc3_phy_setup() does clear this
-	 * bit before phy init, so something sets it again afterwards.
+	 * GUSB3PIPECTL0.SUSPHY must be clear for the SuperSpeed PHY to be
+	 * accessible: a suspended PHY answers reads with zeros and discards
+	 * writes, so nothing programmed into it takes. dwc3_phy_setup() clears
+	 * this bit before phy init, so something sets it again afterwards.
 	 */
 	{
 		u32 r = dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0));
