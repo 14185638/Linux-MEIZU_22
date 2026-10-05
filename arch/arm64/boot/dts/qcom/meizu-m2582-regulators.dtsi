@@ -2,38 +2,21 @@
 /*
  * Meizu 22 (M2582) -- PMXR2230 regulators through the upstream RPMh driver.
  *
- * Moves the rails the PMXR2230 owns off qcom-tuna-boot-regulator and onto
- * qcom-rpmh-regulator, which already knows this PMIC family (PM7550, added by
- * postmarketOS, has the same 23-LDO layout). Layout follows upstream, see
- * qcom/eliza-mtp.dts: one sibling node per PMIC under &apps_rsc, each with its
- * own qcom,pmic-id. The driver builds each resource name from that id and the
- * rail index -- "ldo" + "b" + 8 = "ldob8" -- then resolves the address in the
- * firmware command DB, so no address is hard-coded.
+ * The rails the PMXR2230 owns live here rather than in
+ * qcom-tuna-boot-regulator, which qcom-rpmh-regulator replaces. Layout
+ * follows upstream (qcom/eliza-mtp.dts): one sibling node per PMIC under
+ * &apps_rsc, each with its own qcom,pmic-id. The driver builds each resource
+ * name from that id and the rail index and resolves it in the firmware
+ * command DB, so no address is hard-coded. Voltages are the values the
+ * private driver already requested.
  *
- * Voltage values are copied verbatim from what the private driver already
- * requested: those requests are known to boot, and this change is about who
- * provides the rails, not what they are set to.
+ * Every rail is always-on, not merely boot-on: boot-on only keeps a rail up
+ * at startup, and regulator_init_complete() still switches off one with
+ * use_count zero about 31 s in -- which took USB down, since ldob3, ldob5,
+ * ldob8 and ldob19 are the PHY, UFS and panel rails.
  *
- * Every rail is regulator-always-on, matching what the private driver used and
- * for a reason that was measured the hard way. boot-on is NOT equivalent: it
- * only keeps the rail enabled at startup, and regulator_init_complete() still
- * switches off a rail whose use_count is zero. That happens around 31 s in, and
- * the log from the first attempt at this file shows exactly what it costs:
- *
- *     [   31.742933] ldob3: disabling
- *     [   31.744107] ldob5: disabling
- *     [   31.745271] ldob8: disabling
- *     [   31.746426] ldob19: disabling
- *
- * ldob3 and ldob5 belong to the USB PHYs, so the board did not hang -- it
- * merely lost USB, which looked identical to a hang because the console is on
- * USB. always-on is the honest description here: these rails power PHYs, UFS
- * and the panel, and there is no state of this board in which switching them
- * off is correct.
- *
- * No vdd-*-supply yet: the driver table names parent supplies and the core
- * tolerates a named supply the tree does not provide, but not a rail whose
- * parent cannot be resolved.
+ * No vdd-*-supply yet: the core tolerates a named supply the tree does not
+ * provide, but not a rail whose parent cannot be resolved.
  */
 &apps_rsc {
 	regulators-0 {

@@ -2,36 +2,16 @@
 /*
  * M2582: AMOLED display power (ELVDD / ELVSS / OLEDB) on the PMD802x.
  *
- * DISABLED, deliberately, to match the factory device tree.
+ * Disabled, deliberately, to match the factory device tree. The bootloader
+ * brings these rails up through its own XBL service (default-elvdd /
+ * default-elvss / default-oledb) and leaves them running, and the factory
+ * panel node never references them -- so a working display does not depend
+ * on Linux owning this power.
  *
- * The vendor declares this exact block with status = "disabled" and never
- * references its rails from the panel node. That is not an oversight: the
- * bootloader brings the AMOLED rails up through its own service (/sw/pmic/
- * display in the XBL image, with default-elvdd / default-elvss / default-oledb
- * and a dedicated pm_oledb_driver.c) and leaves them running. Nothing in Linux
- * needs to touch them.
- *
- * This matters because it rules out the most attractive explanation for a
- * black screen. The reasoning used to be: the bootloader lights the panel, the
- * kernel shows nothing, therefore the kernel lost the supply. But the vendor
- * kernel also shows nothing to begin with and also never powers these rails,
- * yet its display works -- it re-initialises the panel at ~12.6 s, after the
- * bootloader had already done so, and the panel keeps running (its dmesg shows
- * adaptive-refresh minfps updates continuing to 65 s). So a working kernel
- * does not need to own this power, and the supplies cannot be what is missing
- * here.
- *
- * The block is kept, disabled, for two reasons: it documents the rail map and
- * voltage ranges from the factory tree, and the driver has been ported and is
- * available if it ever turns out to be needed.
- *
- * It was previously enabled, with a qcom,pmd8028 entry added to
- * drivers/mfd/qcom-spmi-pmic.c so the child device would be instantiated. It
- * probed and failed: every SPMI access to the PMD8028 (slave 4) is rejected by
- * the hardware with "transaction failed", so the driver could not read
- * PERIPH_REVISION4 and bailed out. Leaving a probe that cannot succeed running
- * on every boot is worse than not probing at all, and it puts the kernel in a
- * different state from the vendor's.
+ * The block is kept for the rail map and the voltage ranges taken from the
+ * factory tree. It cannot probe as written: every SPMI access to the PMD8028
+ * (slave 4) is rejected by the hardware with "transaction failed", so the
+ * driver never reads PERIPH_REVISION4.
  */
 
 &pmd8028 {

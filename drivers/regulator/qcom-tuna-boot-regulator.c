@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Experimental TUNA bring-up: PMIC5 LDO votes through the existing RPMh API.
+ * PMIC5 LDO votes for the TUNA boards, through the existing RPMh API.
  * Protocol: Qualcomm rpmh-regulator.c (2024), VRM voltage/enable/mode words.
  * Board limits and resource names must come from the actual firmware DT.
- * This intentionally supports active-state LDO votes only; no suspend support.
+ * Active-state votes only; there is no suspend support.
  */
 #include <linux/module.h>
 #include <linux/of.h>

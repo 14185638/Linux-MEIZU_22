@@ -2,32 +2,16 @@
 /*
  * Meizu 22 (M2582) -- PMXR2230 over-temperature protection.
  *
- * This is the one heat limit that does not depend on anything we could not
- * read. The PMXR2230 is the PMIC that supplies the CPU rails, and it watches
- * its own die temperature in hardware: stage 2 and stage 3 shutdown are armed
- * by default, so if the die crosses its threshold the PMIC shuts the board
- * down on its own, with Linux out of the loop entirely.
+ * The PMXR2230 supplies the CPU rails and watches its own die temperature in
+ * hardware: stage 2 and stage 3 shutdown are armed by default, so it shuts
+ * the board down on its own with Linux out of the loop. That is the one heat
+ * limit available here -- TSENS calibration lives in efuse the non-secure
+ * world cannot read, and throttling on an untrustworthy CPU temperature is
+ * worse than not throttling.
  *
- * What that buys: the CPU sits right next to this PMIC and shares its heat
- * island, so CPU load shows up here. Measured on this board, eight busy
- * threads for 90 s took the PMXR2230 die from 39 C to 72 C. It is a lagging
- * signal rather than the CPU's own junction temperature, which is exactly why
- * the factory design does not rely on it alone either -- but it is a real
- * hardware limit, and it is the only one available to us.
- *
- * What it deliberately does not do: no software throttling. TSENS would be
- * the sensor for that, and its calibration lives in efuse that the non-secure
- * world cannot reach -- the direct read resets the board and the secure call
- * is refused. Without a trustworthy CPU temperature there is nothing to
- * throttle against, and throttling on the wrong number is worse than not
- * throttling at all. The goal here is narrow and it is met: do not let the
- * silicon cook.
- *
- * Trip points are the values the factory tree uses for this PMIC
- * (pmxr2230_tz: 95 C passive, 115 C hot, 145 C critical) and they match the
- * binding's own example for this family. They are thresholds inside the PMIC,
- * not policy knobs: the hardware stage limits are what actually shut the board
- * down, and the driver only ever lowers them, never raises them.
+ * Trip points are the factory tree's values for this PMIC (95 C passive,
+ * 115 C hot, 145 C critical), which match the binding's example for this
+ * family. Software only ever lowers the hardware stage limits.
  */
 &spmi_bus {
 	pmxr2230: pmic@1 {

@@ -21,27 +21,16 @@
 /* 需要 &pmk8550 标签，必须放在 pmk8550.dtsi 之后 */
 #include "meizu-m2582-vadc.dtsi"
 /*
- * The rest of the PMIC complex that this board actually carries.
+ * The rest of the PMIC complex this board carries. The factory tree puts
+ * thirteen PMICs on the SPMI bus; PMK8550 at USID 0 and PMIH010X at USID 7
+ * were already reachable, and this adds PM8550VE at USIDs 3, 5 and 6 and
+ * PM8550VS at USID 9 -- what sm8750-pmics.dtsi describes for this SoC.
  *
- * The factory device tree puts thirteen PMICs on the SPMI bus. Only two were
- * reachable before: the PMK8550 at USID 0 (which carries the SDAM the bootloader
- * reads for its restart reason) and the PMIH010X at USID 7 (which carries the
- * eUSB2 repeater). This brings in four more -- PM8550VE at USIDs 3, 5 and 6 and
- * PM8550VS at USID 9 -- which is what sm8750-pmics.dtsi already describes for
- * this SoC generation.
- *
- * Deliberately included for what it does NOT contain: there are no regulators
- * here. Declaring a rail is the part that can reset this board, because the RPMh
- * path stalls the RSC and the bootloader's own configuration is what currently
- * keeps everything powered; see meizu-m2582-power.dtsi. All this adds is the
- * PMICs themselves, their PMIC GPIO blocks, and the thermal zones and trip
- * points that come with them -- enough to talk to the hardware and to read its
- * temperature, with nothing that can take a rail away.
- *
- * The remaining PMICs from the factory list (PMXR2230 at USID 1, PM8550VS at
- * 2 and 4, PM8550VE at 8, PMR735D at 10, PM8010 at 12 and 13) are not here yet:
- * upstream has no binding for the PMXR2230, and the rest want their regulators
- * declared alongside them to be worth much.
+ * Deliberately included for what it does not contain: no regulators.
+ * Declaring a rail is what can reset this board, because the RPMh path
+ * stalls the RSC; see meizu-m2582-power.dtsi. This adds only the PMICs, their
+ * GPIO blocks and their thermal zones, so there is nothing that can take a
+ * rail away.
  */
 #include "sm8750-pmics.dtsi"
 #include "pmd8028.dtsi"
@@ -67,34 +56,20 @@
 	};
 };
 /*
- * Merge a "normal" mode into the reboot-mode node that pmk8550.dtsi creates.
+ * Merge a "normal" mode into the reboot-mode node pmk8550.dtsi creates.
+ * Without it the kernel writes nothing on a plain reboot: the framework only
+ * writes when the magic is non-zero, a plain reboot passes cmd == NULL, and
+ * pmk8550.dtsi defines no mode for "normal" -- so the restart-reason field
+ * kept the last fastboot value and every warm reset went back to fastboot.
+ * Zero cannot be used either, since zero is what the framework refuses to
+ * write.
  *
- * Without it the kernel writes nothing on a plain reboot. The framework only
- * writes when the magic is non-zero --
- *
- *     magic = get_reboot_mode_magic(reboot, cmd);
- *     if (magic)
- *             reboot->write(reboot, magic);
- *
- * -- and a plain reboot passes cmd == NULL, which is treated as "normal", for
- * which pmk8550.dtsi defines no mode at all (only recovery and bootloader). So
- * the restart-reason field kept whatever the last entry into fastboot had left
- * there, and every warm reset went back to fastboot. Zero cannot be used here
- * either: zero is exactly the value the framework refuses to write.
- *
- * 0x7f is the way out, and it was measured rather than guessed. The PMK8550's
- * SDAM2 field at offset 0x48 is seven bits wide (bits = <1 7>), and writing a
- * value there really does steer the bootloader:
- *
- *     write 0x04 (0x02 << 1, "bootloader")  ->  6 s later, fastboot
- *     write 0xfe (0x7f << 1)                -> 18 s later, Linux
- *
- * ABL prints "Boot reason: 0x%x not handled, defaulting to Normal Boot", so an
- * unrecognised value is precisely what boots Linux. 0x7f is outside the small
- * set it knows, and unlike zero it is non-zero, so the framework will write it.
- *
- * mode-recovery (0x01) and mode-bootloader (0x02) come from pmk8550.dtsi and
- * are what `reboot recovery` and `reboot bootloader` use.
+ * The SDAM2 field at offset 0x48 is seven bits wide (bits = <1 7>). Writing
+ * 0x04 (0x02 << 1, "bootloader") enters fastboot 6 s later; writing 0xfe
+ * (0x7f << 1) reaches Linux 18 s later, because ABL defaults to a normal boot
+ * for a reason value it does not recognise and 0x7f is outside the set it
+ * knows. mode-recovery (0x01) and mode-bootloader (0x02) come from
+ * pmk8550.dtsi.
  */
 / {
 	reboot-mode {

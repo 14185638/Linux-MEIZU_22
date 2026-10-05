@@ -1,52 +1,17 @@
 // SPDX-License-Identifier: BSD-3-Clause
-/* Experimental active-only RPMh votes; verified firmware resource names. */
+/* Active-only RPMh votes; resource names verified against the firmware. */
 &apps_rsc {
 	regulators {
 		compatible = "qcom,tuna-boot-regulators";
 		/*
-		 * DO NOT REGISTER an "ldok7" (PMR735B L7) regulator here.
+		 * Do not register an "ldok7" (PMR735B L7) regulator here. The factory
+		 * tree does feed both USB PHYs that rail, but any vote for it stalls the
+		 * RSC and resets the board: the resource resolves in the CMD_DB, yet the
+		 * firmware does not accept a write to it, and the regulator core's
+		 * min/max vote during registration is enough to trigger it.
 		 *
-		 * The factory DT really does feed both USB PHYs this rail
-		 * (vdd-supply = <0x22f> = pmr735b_l7, RPMh resource "ldok7") while our
-		 * PHYs take PMXR2230 ldob3, and that looked like a promising
-		 * explanation for both PHYs silently discarding every register write.
-		 *
-		 * It cannot be tested from this kernel: the resource resolves in the
-		 * CMD_DB (otherwise probe would report Missing resource), but ANY vote
-		 * for it stalls the RSC and the board resets. Measured twice, and the
-		 * second time with neither always-on nor boot-on set, which proves the
-		 * write comes from the regulator core applying the min/max constraints
-		 * during registration -- not from an enable vote:
-		 *
-		 *     calling tuna_boot_regulator_driver_init
-		 *     pmr735b_l7: Setting 880000-950000uV     <- dies here
-		 *     ldob2: Setting 880000-925000uV
-		 *
-		 * So the rail cannot be added to this DT as an RPMh resource at all.
-		 * The factory reaches it through a path this firmware accepts and we do
-		 * not; that mechanism has to be understood before this is retried.
-		 */
-		/*
-		 * DO NOT ADD an "ldok7" (PMR735B L7) regulator here.
-		 *
-		 * The factory DT really does feed both USB PHYs that rail
-		 * (vdd-supply = <0x22f> = pmr735b_l7, RPMh resource "ldok7"), and our
-		 * PHYs were pointed at PMXR2230 ldob3 instead -- which looked like the
-		 * explanation for both PHYs silently discarding register writes.
-		 *
-		 * Adding it hangs the board. The last thing printed before the screen
-		 * stopped updating and the phone reset was:
-		 *
-		 *     calling tuna_boot_regulator_driver_init
-		 *     pmr735b_l7: Setting 880000-950000uV
-		 *     ldob2: Setting 880000-925000uV
-		 *
-		 * i.e. it dies at that first vote. A write to an RPMh resource this
-		 * firmware does not own stalls the RSC, so "ldok7" is not one of the
-		 * resource names this board accepts -- the ones in this file are
-		 * "verified firmware resource names" and ldok7 is evidently not among
-		 * them. Do not re-add it without confirming the name the firmware
-		 * actually exposes.
+		 * Our PHYs take PMXR2230 ldob3 instead. Re-adding this needs the resource
+		 * name the firmware actually exposes, not the one the factory tree uses.
 		 */
 		vreg_ldod3: regulator-ldod3 {
 			qcom,resource-name = "ldod3";

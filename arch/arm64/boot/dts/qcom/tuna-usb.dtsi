@@ -206,49 +206,24 @@
 		 * never locked and PHYSTATUS stayed set.
 		 */
 		/*
-		 * M2582: the factory clock list, seven entries, and the difference
-		 * matters. We declared only four, with different names:
-		 *
-		 *   ours:   "aux" "ref"(a local fixed clock) "com_aux" "usb3_pipe"
-		 *   factory:"aux_clk" "pipe_clk" "pipe_clk_mux" "pipe_clk_ext_src"
-		 *           "ref_clk_src" "ref_clk" "com_aux_clk"
-		 *
-		 * so pipe_clk_mux, ref_clk_src and ref_clk were never enabled at all.
-		 * ref_clk is the TCSR USB3 clock gate -- the one that had to be pried
-		 * open with a raw ioremap in this driver because no clock was attached
-		 * to it -- and pipe_clk_mux is the PIPE clock path the SuperSpeed link
-		 * needs. With no PIPE clock the PHY's digital block cannot hold its
-		 * configuration, which is exactly what the readback shows: every value
-		 * from the 165-entry table is missing, and what is there are the PHY's
-		 * own defaults (000=00000000 004=00000000 018=01010101 01c=0a0a0a0a)
-		 * instead of 000=000000c0 004=00000001 018=00000036.
-		 *
-		 * ref_clk uses the fixed-clock stub rather than &tcsrcc, for the same
-		 * reason the eUSB2 PHY does: tcsrcc never probes and a real reference
-		 * makes the PHY defer forever. The gate is already open in hardware.
+		 * Seven clocks, matching the factory list. Three of them -- pipe_clk_mux,
+		 * ref_clk_src and ref_clk -- were missing before, and pipe_clk_mux is the
+		 * PIPE clock path the SuperSpeed link runs on: without it the PHY's digital
+		 * block cannot hold its configuration and every value from the 165-entry
+		 * table reads back as the PHY default.
+		 * ref_clk is the TCSR USB3 gate, kept as a fixed-clock stub because tcsrcc
+		 * never probes and a real reference makes the PHY defer forever; the gate
+		 * is already open in hardware.
 		 */
 		/*
-		 * M2582: the first four entries keep the exact names this driver
-		 * looks up by hand -- it does
+		 * The first four names are the exact strings qcom-qmp-combo-phy looks up
+		 * (devm_clk_get(dev, "usb3_pipe") plus "aux", "ref" and "com_aux" from
+		 * its name lists), so renaming them fails the probe outright. The factory's
+		 * remaining three are appended under their own names:
 		 *
-		 *     qmp->pipe_clk = devm_clk_get(dev, "usb3_pipe");
-		 *
-		 * and takes "aux", "ref" and "com_aux" from QMP_PHY_INIT_CFG-style
-		 * name lists, so renaming them makes the probe fail outright:
-		 *
-		 *     qcom-qmp-combo-phy 88e8000.phy: error -2: failed to get usb3_pipe_clk
-		 *     qcom-qmp-combo-phy 88e8000.phy: probe ... failed with error -2
-		 *     88e8000.phy: no-driver
-		 *
-		 * The factory's remaining three clocks are appended with their own
-		 * names so nothing the driver looks up by name changes:
-		 *
-		 *   pipe_clk_mux     GCC_USB3_PRIM_PHY_PIPE_CLK_SRC  -- the PIPE clock
-		 *                    path the SuperSpeed link runs on
-		 *   ref_clk_src      RPMH CXO
-		 *   ref_clk          the TCSR USB3 gate, as a fixed-clock stub (tcsrcc
-		 *                    never probes and a real reference makes this PHY
-		 *                    defer forever; the gate is already open)
+		 *     pipe_clk_mux   GCC_USB3_PRIM_PHY_PIPE_CLK_SRC
+		 *     ref_clk_src    RPMH CXO
+		 *     ref_clk        the TCSR USB3 gate (fixed-clock stub, see above)
 		 */
 		/*
 		 * M2582: qmp_combo_phy_clk_l[] is hardcoded to the four names
@@ -266,26 +241,10 @@
 		 * unused, and it documents that the gate exists.
 		 */
 		/*
-		 * M2582: "cfg_ahb" was missing, and it is the register interface's
-		 * clock. The driver's list is {"aux", "cfg_ahb", "ref", "com_aux"} and
-		 * it logs the resolved rates -- which read
-		 *
-		 *     phy clk[0] aux     rate=19200000
-		 *     phy clk[1] cfg_ahb rate=0          <- no clock at all
-		 *     phy clk[2] ref     rate=38400000
-		 *     phy clk[3] com_aux rate=19200000
-		 *
-		 * and a write/read-back of 0xa5a5a5a5 across the whole register window
-		 * reads back the original values bit for bit, at every offset tested:
-		 *
-		 *     000:00000000->00000000  004:00000000->00000000
-		 *     018:01010101->01010101  400:0a0a0a0a->0a0a0a0a
-		 *
-		 * A register file with no AHB clock cannot latch writes. That is what
-		 * "completely unwritable" looks like, and it explains the entire
-		 * investigation: pre-init and post-init states identical, the 165-entry
-		 * table having no effect, and the PLL never locking.
-		 *
+		 * cfg_ahb is the register interface's clock; without it the PHY's register
+		 * file cannot latch writes at all -- a write/read-back of 0xa5a5a5a5 across
+		 * the window returns the original values bit for bit, which is why the
+		 * pre-init and post-init states were identical and the PLL never locked.
 		 * GCC_USB3_PRIM_PHY_AUX_CLK_SRC is the live AUX source.
 		 */
 		/*
@@ -407,21 +366,13 @@
 
 	/*
 	 * Bind the ported vendor glue (drivers/usb/dwc3/dwc3-msm-core.c) instead of
-	 * mainline's dwc3-qcom. Everything here is taken from the vendor's own
-	 * qcom/opensource/devicetree/tuna-usb.dtsi, with two deliberate changes:
-	 *
-	 *   - "phys"/"phy-names" (generic PHY) instead of the vendor's legacy
-	 *     "usb-phy" property, so the PHYs mainline already drives correctly are
-	 *     used. The ported driver was taught to tolerate that.
-	 *   - no "qcom,num-gsi-evt-buffs", which keeps the whole GSI/IPA offload
-	 *     path switched off.
-	 *
-	 * The node keeps its "usb@a600000" name because other DTS files reference
-	 * it by path; the driver matches on compatible, not on the node name.
-	 *
+	 * mainline's dwc3-qcom, taken from the vendor's own tuna-usb.dtsi with two
+	 * deliberate changes: "phys"/"phy-names" instead of the vendor's legacy
+	 * "usb-phy", so the PHYs mainline already drives are used, and no
+	 * "qcom,num-gsi-evt-buffs", which keeps the GSI/IPA offload path off.
 	 * The 1 MB "core_base" mapping matters: the DBM block the vendor's block
-	 * reset touches lives at 0xf8000 + 0x020c, which mainline's dwc3-qcom
-	 * mapping (0xf8800 bytes) did not reach.
+	 * reset touches is at 0xf8000 + 0x020c, past the end of mainline's
+	 * dwc3-qcom mapping.
 	 */
 	usb: usb@a600000 {
 		compatible = "qcom,dwc-usb3-msm";
@@ -476,22 +427,12 @@
 
 		dwc3_0: dwc3@a600000 {
 			/*
-			 * M2582: attach the controller to the apps SMMU.
-			 *
-			 * The factory node carries
-			 *   iommus = <&apps_smmu 0x40 0x0>;
-			 *   qcom,iommu-dma = "atomic";
-			 *   memory-region = <&dwc3_mem_region>;
-			 * and that last one reserves IOVA 0x0..0x90000000 as
-			 * unmapped. Our kernel sets
-			 * CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT=y and
-			 * CONFIG_IOMMU_DEFAULT_DMA_STRICT=y, so without an iommus
-			 * property the controller has no usable mapping: the event
-			 * buffer the driver allocates lands near 0x8090_8000, the
-			 * controller's writes to it are dropped, the driver reads
-			 * only the bootloader's leftover 0x00009001 pattern, EP0
-			 * never sees a real event, and the host loops on
-			 * SET_ADDRESS with error -71.
+			 * The factory node carries iommus = <&apps_smmu 0x40 0x0> and a
+			 * memory-region reserving IOVA 0x0..0x90000000. With
+			 * CONFIG_ARM_SMMU_DISABLE_BYPASS_BY_DEFAULT and
+			 * CONFIG_IOMMU_DEFAULT_DMA_STRICT set, an iommus-less controller has no
+			 * usable mapping: the event buffer lands near 0x8090_8000, the controller's
+			 * writes to it are dropped and EP0 never sees a real event.
 			 */
 			iommus = <&apps_smmu 0x40 0x0>;
 			qcom,iommu-dma = "atomic";
@@ -542,49 +483,20 @@
 			dr_mode = "peripheral";
 
 			/*
-			 * M2582: do not advertise USB2 Link Power Management.
-			 *
-			 * Measured against the vendor's running kernel:
-			 *
-			 *   DCFG  vendor 00a0082d   ours 00e00805   -> bit 22 = LPM_CAP, set only in ours
-			 *   DCTL  vendor 80f00000   ours 8f000000   -> HIRD_THRES (USB2 LPM branch) only in ours
-			 *
-			 * The two registers agree with each other on both sides, and that
-			 * agreement is the point: with LPM_CAP advertised the host may put
-			 * the link into L1, and the link then sits suspended instead of
-			 * answering. That is exactly the observed failure -- the host
-			 * attaches at high speed (so the PHY, repeater and PIPE clock are
-			 * all working) and then gets nothing back:
-			 *
-			 *   usb 3-2: new high-speed USB device number 78
-			 *   usb 3-2: new full-speed  USB device number 80
-			 *   usb 3-2: device not accepting address, error -71
-			 *   endpoint events reaching the gadget: 0
-			 *
-			 * Every PHY-side register is already byte-identical to the vendor's,
-			 * including the PMIC eUSB2 repeater, whose twelve tuning values match
-			 * this driver's built-in table exactly. Refusing LPM is what makes
-			 * DCFG and DCTL match the working stack.
+			 * Do not advertise USB2 Link Power Management. The vendor's running kernel
+			 * has DCFG 0x00a0082d and DCTL 0x80f00000 against our 0x00e00805 and
+			 * 0x8f000000 -- bit 22 (LPM_CAP) and the HIRD_THRES field are set only in
+			 * ours, and the two registers agree with each other on both sides.
+			 * With LPM_CAP advertised the host may put the link into L1 and it then sits
+			 * suspended instead of answering: the device attaches at high speed and then
+			 * never accepts an address.
 			 */
 			snps,usb2-gadget-lpm-disable;
 			/*
-			 * M2582: the factory value, restored.
-			 *
-			 * This was briefly changed to "high-speed" on the theory that
-			 * DCFG.DEVSPD should match the high-speed link we observed. That
-			 * was backwards: maximum-speed is what ALLOWS the core to attempt
-			 * SuperSpeed at all, and with it set to high-speed the SS link is
-			 * never tried, so the device can only ever come up on the eUSB2
-			 * high-speed PHY.
-			 *
-			 * Ground truth from the running vendor stack settles it -- its UDC
-			 * reports
-			 *
-			 *     /sys/class/udc/<name>/state         = configured
-			 *     /sys/class/udc/<name>/current_speed = super-speed
-			 *
-			 * i.e. the working stack runs on the QMP SuperSpeed PHY, not on
-			 * eUSB2. Allow the same here.
+			 * The factory value, restored. maximum-speed is what allows the core to
+			 * attempt SuperSpeed at all; set to high-speed the SS link is never tried
+			 * and the device can only ever come up on the eUSB2 high-speed PHY. The
+			 * vendor's UDC reports super-speed.
 			 */
 			maximum-speed = "super-speed-plus";
 
@@ -595,29 +507,12 @@
 			snps,dis-u1-entry-quirk;
 			snps,dis-u2-entry-quirk;
 			/*
-			 * M2582: do not let the core suspend the SuperSpeed PHY.
-			 *
-			 * Measured with /dev/mem snapshots of the DWC3 registers taken at
-			 * 13 s, 43 s and 113 s:
-			 *
-			 *   t=13 s   udc=not attached   GUSB3PIPECTL0 030e1002
-			 *   t=43 s   udc=not attached   GUSB3PIPECTL0 030e1002
-			 *   t=113 s  udc=configured     GUSB3PIPECTL0 030c1002
-			 *
-			 * The only bit that changes when the link finally comes up is
-			 * bit 17, GUSB3PIPECTL.SUSPHY: the SuperSpeed PHY sits suspended
-			 * and the core never sees a connect, so the gadget binds at 8 s
-			 * and then nothing happens for another forty-odd seconds until
-			 * something clears the bit.
-			 *
-			 * dwc3_enable_susphy() only sets SUSPHY when this quirk is absent
-			 * (core.c: "if (enable && !dwc->dis_u3_susphy_quirk)"). The vendor
-			 * tree carries snps,dis_u2_susphy_quirk for the high-speed PHY but
-			 * its runtime register reads 030c1002 with SUSPHY clear, so it
-			 * never leaves the SS PHY suspended either.
-			 *
-			 * Not suspending it also gives the SuperSpeed link a chance, which
-			 * is the other thing this board has never managed.
+			 * Do not let the core suspend the SuperSpeed PHY. GUSB3PIPECTL0 is
+			 * 0x030e1002 while the gadget never attaches and 0x030c1002 once the link
+			 * comes up; the only bit that changes is SUSPHY (bit 17), so with it set the
+			 * core never sees a connect. dwc3_enable_susphy() only sets it when this
+			 * quirk is absent, and the vendor's register reads 0x030c1002 with SUSPHY
+			 * clear, so it never leaves the SS PHY suspended either.
 			 */
 			snps,dis_u2_susphy_quirk;
 			snps,dis_u3_susphy_quirk;
