@@ -281,7 +281,20 @@
  */
 &gpu {
 	compatible = "qcom,adreno-44030000", "qcom,adreno";
-	status = "okay";
+	/*
+	 * Disabled on purpose. Enabling it on a board with the firmware installed
+	 * hangs the machine during the DRM probe -- the first GPU power-up -- and
+	 * the failure takes the USB gadget with it, so there is no way back in
+	 * without a physical power cycle. Everything else in this file (catalog
+	 * entry, SMMU, GMU, OPP table, firmware) is in place and the node was
+	 * measured working up to firmware loading; what is missing is the supply
+	 * rails, and until those are modelled the GPU cannot be asked to come up.
+	 *
+	 * "disabled" keeps the whole path in the tree and testable by changing
+	 * this one word, which is the state to re-enable deliberately rather than
+	 * by accident.
+	 */
+	status = "disabled";
 
 	operating-points-v2 = <&gpu_opp_table>;
 
