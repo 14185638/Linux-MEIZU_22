@@ -213,6 +213,32 @@
 			clock-frequency = <19200000>;
 		};
 
+		/*
+		 * The second GENI QUP wrapper. WRAP 2 is where this board's I2C
+		 * devices actually are -- see meizu-m2582-i2c.dtsi -- and it was
+		 * missing from this file entirely, so its children could not be
+		 * declared at all.
+		 *
+		 * The window, the two AHB clocks and the SE clock indices are each
+		 * confirmed twice: by the board's vendor device tree overlay
+		 * (qupv3_2 at 0x8c0000, clocks <&gcc 0x6d>, <&gcc 0x6e>, and
+		 * <&gcc 0x59..0x5f> for its serial engines) and by qcom,gcc-tuna.h,
+		 * where those indices are exactly GCC_QUPV3_WRAP_2_M_AHB_CLK,
+		 * GCC_QUPV3_WRAP_2_S_AHB_CLK and GCC_QUPV3_WRAP2_S0..S7_CLK.
+		 *
+		 * Its serial engines live in meizu-m2582-i2c.dtsi rather than here,
+		 * because which of them this board wires up is a board fact.
+		 */
+		qupv3_2: geniqup@8c0000 {
+			compatible = "qcom,geni-se-qup";
+			reg = <0 0x008c0000 0 0x2000>;
+			clocks = <&gcc GCC_QUPV3_WRAP_2_M_AHB_CLK>, <&gcc GCC_QUPV3_WRAP_2_S_AHB_CLK>;
+			clock-names = "m-ahb", "s-ahb";
+			#address-cells = <2>;
+			#size-cells = <2>;
+			ranges;
+		};
+
 		qupv3_1: geniqup@ac0000 {
 			compatible = "qcom,geni-se-qup";
 			reg = <0 0x00ac0000 0 0x2000>;
