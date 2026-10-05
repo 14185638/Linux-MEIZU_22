@@ -335,56 +335,67 @@
 		opp-1150000000 {
 			opp-hz = /bits/ 64 <1150000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L2>;
+			qcom,opp-acd-level = <0xa8285ffd>;
 		};
 
 		opp-1100000000 {
 			opp-hz = /bits/ 64 <1100000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
+			qcom,opp-acd-level = <0x88295ffd>;
 		};
 
 		opp-1050000000 {
 			opp-hz = /bits/ 64 <1050000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L0>;
+			qcom,opp-acd-level = <0x882a5ffd>;
 		};
 
 		opp-937000000 {
 			opp-hz = /bits/ 64 <937000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+			qcom,opp-acd-level = <0x882a5ffd>;
 		};
 
 		opp-873000000 {
 			opp-hz = /bits/ 64 <873000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_NOM_L1>;
+			qcom,opp-acd-level = <0xa82a5ffd>;
 		};
 
 		opp-763000000 {
 			opp-hz = /bits/ 64 <763000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_NOM>;
+			qcom,opp-acd-level = <0x882b5ffd>;
 		};
 
 		opp-688000000 {
 			opp-hz = /bits/ 64 <688000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>;
+			qcom,opp-acd-level = <0x882b5ffd>;
 		};
 
 		opp-643000000 {
 			opp-hz = /bits/ 64 <643000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+			qcom,opp-acd-level = <0xa82b5ffd>;
 		};
 
 		opp-510000000 {
 			opp-hz = /bits/ 64 <510000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+			qcom,opp-acd-level = <0xc02c5ffd>;
 		};
 
 		opp-362000000 {
 			opp-hz = /bits/ 64 <362000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+			qcom,opp-acd-level = <0xc8295ffd>;
 		};
 
 		opp-264000000 {
 			opp-hz = /bits/ 64 <264000000>;
 			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D1>;
+			qcom,opp-acd-level = <0xc8295ffd>;
 		};
 	};
 };
@@ -457,6 +468,14 @@
 	power-domains = <&gpucc GPU_CC_CX_GDSC>,
 			<&gpucc GPU_CC_CX_GMU_GDSC>;
 	power-domain-names = "cx", "gmu";
+
+	/*
+	 * Required, not optional: a6xx_gmu_acd_probe() sends the GPU's ACD state
+	 * to AOSS over this and returns -EINVAL if it is missing while the OPP
+	 * table carries qcom,opp-acd-level. The vendor's GMU node has the same
+	 * property, and sends the ACD state first thing in gen8_gmu_first_boot.
+	 */
+	qcom,qmp = <&aoss_qmp>;
 
 	iommus = <&gpu_smmu 5 0>;
 

@@ -169,6 +169,41 @@
 		 * which nothing on this platform provides -- see the note in
 		 * gpucc-tuna.c.
 		 */
+		/*
+		 * IPCC and the AOSS QMP that rides on it.
+		 *
+		 * The GPU needs these. a6xx_gmu_acd_probe() sends the GPU's ACD state to
+		 * AOSS with qmp_send(), and refuses to continue when the GPU has ACD
+		 * levels but qcom,qmp is absent ("Unable to send ACD state to AOSS",
+		 * -EINVAL). This part has ACD -- the vendor's gen8_6_0 entry lists
+		 * ADRENO_ACD -- and the vendor sends that state as the very first thing
+		 * in gen8_gmu_first_boot, before the CX GDSC, before the clocks and
+		 * before the firmware is loaded.
+		 *
+		 * Both nodes come from the SoC's own vendor device tree, including the
+		 * IPCC client/signal numbers; the vendor's GMU node carries
+		 * qcom,qmp = <&aoss_qmp>, which is the property the driver reads through
+		 * qmp_get().
+		 */
+		ipcc_mproc: mailbox@406000 {
+			compatible = "qcom,ipcc";
+			reg = <0 0x00406000 0 0x1000>;
+			interrupts = <GIC_SPI 229 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <3>;
+			#mbox-cells = <2>;
+		};
+
+		aoss_qmp: power-management@c300000 {
+			compatible = "qcom,aoss-qmp";
+			reg = <0 0x0c300000 0 0x400>;
+			interrupt-parent = <&ipcc_mproc>;
+			interrupts = <0 0 IRQ_TYPE_EDGE_RISING>;
+			mboxes = <&ipcc_mproc 0 0>;
+			#power-domain-cells = <1>;
+			#clock-cells = <0>;
+		};
+
 		gpucc: clock-controller@3d90000 {
 			compatible = "qcom,tuna-gpucc";
 			reg = <0 0x03d90000 0 0x9800>;
