@@ -37,6 +37,23 @@ config DRM_MSM_GPU_STATE
 	depends on DRM_MSM && (DEBUG_FS || DEV_COREDUMP)
 	default y
 
+config DRM_MSM_M2582_GPU_HW_INIT_GATE
+	bool "Meizu M2582: stop the GPU hw_init early (bring-up only)"
+	depends on DRM_MSM
+	default n
+	help
+	  Temporary bring-up aid for the Meizu 22. Enabling it makes the a6xx
+	  hw_init return right after the GMU has been asked to keep the GPU
+	  powered, before any GPU register is written.
+
+	  That is the step that wedges this board -- touching a GPU register
+	  while the GX rail is not up takes the AXI bus down, and the wedge
+	  takes the USB controller with it, so the board needs a physical power
+	  cycle. This option makes it possible to prove the GMU half in
+	  isolation and then move the return point down one stage at a time.
+
+	  Say N unless you are bringing up the GPU on this board.
+
 config DRM_MSM_GPU_SUDO
 	bool "Enable SUDO flag on submits"
 	depends on DRM_MSM && EXPERT
