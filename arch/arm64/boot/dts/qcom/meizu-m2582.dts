@@ -414,19 +414,45 @@
 		     <GIC_SPI 305 IRQ_TYPE_LEVEL_HIGH>;
 	interrupt-names = "hfi", "gmu";
 
+	/*
+	 * Note "axi": GCC_DDRSS_GPU_AXI_CLK. It was missing here, and it is the
+	 * one entry in this list the vendor's GMU node has that ours did not --
+	 * the vendor's clock list is
+	 *   <&gpucc 0x05> CX_GMU, <&gpucc 0x07> CXO, <&gcc 0x12> DDRSS_GPU_AXI,
+	 *   <&gcc 0x22> GEMNOC_GFX, <&gpucc 0x02> AHB, <&gpucc 0x12> HUB_CX_INT
+	 * with names gmu_clk, cxo_clk, axi_clk, memnoc_clk, ahb_clk, hub_clk, and
+	 * sm8650's node carries the same seven clocks including "axi". Without
+	 * the GPU's AXI clock the GMU cannot reach the bus, which is consistent
+	 * with firmware loading but the M3 never reporting back.
+	 */
 	clocks = <&gpucc GPU_CC_AHB_CLK>,
 		 <&gpucc GPU_CC_CX_GMU_CLK>,
 		 <&gpucc GPU_CC_CXO_CLK>,
+		 <&gcc GCC_DDRSS_GPU_AXI_CLK>,
 		 <&gcc GCC_GPU_GEMNOC_GFX_CLK>,
 		 <&gpucc GPU_CC_HUB_CX_INT_CLK>,
 		 <&gpucc GPU_CC_DEMET_CLK>;
-	clock-names = "ahb", "gmu", "cxo", "memnoc", "hub", "demet";
+	clock-names = "ahb", "gmu", "cxo", "axi", "memnoc", "hub", "demet";
 
 	/*
-	 * EXPERIMENT: the GX domain is dropped here. gdsc_gx_do_nothing_enable()
-	 * shows the GX rail is not something the CPU powers up -- the GMU does
-	 * it -- so asking genpd to bring it up may be the very step that wedges.
-	 * If the board survives without it, the GX domain is implicated.
+	 * Two domains, not the three the factory device tree lists.
+	 *
+	 * The factory node says power-domain-names = "cx", "gmu_cx", "gx" with
+	 * <&gpucc 0>, <&gpucc 2>, <&gxclkctl 0>. GX is dropped here, and that
+	 * was established by experiment rather than by reading: with GX present
+	 * the board wedges on every attempt, and the wedge takes the USB
+	 * controller with it so it needs a physical power cycle. Removing it
+	 * lets the GPU reach firmware loading. That was re-tested after
+	 * gxclkctl's own node was corrected to the SoC's single CX GDSC, in
+	 * case the earlier wedge had really been that node's fault -- it still
+	 * wedged, so GX on this node is genuinely the trigger.
+	 *
+	 * The reason is visible in gdsc_gx_do_nothing_enable(): the GX rail is
+	 * not the CPU's to raise, the GMU does it, and the CPU-side GDSC exists
+	 * so power-down can force the domain really off. Listing it here tells
+	 * genpd the opposite -- that the GMU may not run until GX is up -- so
+	 * probe-time sequencing tries to raise a rail whose bring-up belongs to
+	 * firmware that has not started. GX stays out; the GMU brings it up.
 	 */
 	power-domains = <&gpucc GPU_CC_CX_GDSC>,
 			<&gpucc GPU_CC_CX_GMU_GDSC>;

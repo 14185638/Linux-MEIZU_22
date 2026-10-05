@@ -323,8 +323,22 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 	ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT, val,
 		(val & mask) == reset_val, 100, 10000);
 
-	if (ret)
-		DRM_DEV_ERROR(gmu->dev, "GMU firmware initialization timed out\n");
+	if (ret) {
+		u32 fwinit = gmu_read(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT);
+		u32 gmuver = gmu_read(gmu, REG_A6XX_GMU_CM3_SYSRESET);
+
+		DRM_DEV_ERROR(gmu->dev,
+			      "GMU firmware initialization timed out\n");
+		/*
+		 * M2582 bring-up probe, temporary. A register block that answers
+		 * with 0 or all-ones means the block is not really reachable,
+		 * which is a different problem from firmware that ran and
+		 * reported a bad result.
+		 */
+		DRM_DEV_ERROR(gmu->dev,
+			      "M2582 probe: FW_INIT_RESULT=%08x SYSRESET=%08x DTCM=%08x mask=%08x want=%08x\n",
+			      fwinit, gmuver, gmu_read(gmu, REG_A6XX_GMU_CM3_DTCM_START), mask, reset_val);
+	}
 
 	set_bit(GMU_STATUS_FW_START, &gmu->status);
 
@@ -976,7 +990,22 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
 
 	if (adreno_is_a8xx(adreno_gpu)) {
 		fence_range_upper = 0x32;
-		fence_range_lower = 0x8c0;
+		/*
+		 * 0x8a0, not 0x8c0. The vendor's gen8 GMU code -- the same
+		 * generation as this part, gen8_6_0 -- programs this register as
+		 *
+		 *   GEN8_GMUAO_AHB_FENCE_RANGE_0, BIT(31) |
+		 *   FIELD_PREP(GENMASK(30, 18), 0x32) |
+		 *   FIELD_PREP(GENMASK(17, 0), 0x8a0)
+		 *
+		 * in adreno_gen8_gmu.c, so all three of a7xx mainline, a8xx
+		 * mainline-as-written and the vendor agree on 0x8a0 except this
+		 * one line. The fence range decides which AHB accesses the GMU
+		 * considers fenced, so a wrong value is a plausible reason for
+		 * firmware that loads and starts to still report a bad init
+		 * result rather than a clean one.
+		 */
+		fence_range_lower = 0x8a0;
 	} else if (adreno_is_a7xx(adreno_gpu)) {
 		fence_range_upper = 0x32;
 		fence_range_lower = 0x8a0;

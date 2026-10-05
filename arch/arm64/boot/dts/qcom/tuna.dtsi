@@ -210,9 +210,27 @@
 			 * supply to switch, which matters because this is the domain
 			 * the GPU core comes up on.
 			 */
-			power-domains = <&rpmhpd RPMHPD_GFX>,
-					<&rpmhpd RPMHPD_GMXC>,
-					<&gpucc GPU_CC_CX_GDSC>;
+			/*
+			 * One domain, which is what the SoC's own vendor devicetree
+			 * says (oneplus-dt .../devicetree/qcom/tuna.dtsi):
+			 *
+			 *     gxclkctl: clock-controller@3d68024 {
+			 *             compatible = "qcom,tuna-gx_clkctl";
+			 *             reg = <0x3d68024 0x8>;
+			 *             power-domains = <&gpucc GPU_CC_CX_GDSC>;
+			 *             vdd_gx-supply = <&VDD_GFX_MXC_VOTER_LEVEL>;
+			 *     };
+			 *
+			 * This node previously carried three domains copied from
+			 * kaanapali.dtsi (RPMHPD_GFX, RPMHPD_GMXC and the CX GDSC).
+			 * kaanapali is a different SoC and that was the mistake
+			 * AGENTS.md section 6.1 warns about: sibling values are a
+			 * reading dictionary, not a source. The vdd_gx supply is a
+			 * qcom,stub-regulator in the vendor tree, i.e. a bring-up
+			 * placeholder rather than a real rail, so voltage is left to
+			 * RPMh here for the same reason.
+			 */
+			power-domains = <&gpucc GPU_CC_CX_GDSC>;
 
 			#power-domain-cells = <1>;
 		};
