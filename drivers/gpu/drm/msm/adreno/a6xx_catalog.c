@@ -2363,8 +2363,129 @@ static const struct adreno_reglist_pipe a840_dyn_pwrup_reglist_regs[] = {
 };
 DECLARE_ADRENO_REGLIST_PIPE_LIST(a840_dyn_pwrup_reglist);
 
+/*
+ * Meizu 22 (M2582): Adreno 825. The register values below are transcribed from
+ * the vendor's graphics source, entry adreno_gpu_core_gen8_6_0 in
+ * adreno-gpulist.h (vendor-ref/oneplus-dt/vendor/qcom/opensource/graphics-kernel),
+ * and must not be copied from the sibling a8xx entries: comparing mainline's
+ * a840_nonctxt_regs against the vendor's gen8_6_0_nonctxt_regs gives 36 common
+ * registers with 5 differing values, 14 present only in mainline and 3 only in
+ * the vendor, so those are different parts of the same generation.
+ *
+ * The firmware names cannot be derived from the chip id either -- the vendor
+ * mixes generations: gen80000 for SQE/AQE/ZAP and gen80600 for the GMU. All
+ * four files exist in this device's /vendor/firmware.
+ *
+ * gmu_chipid is left zero on purpose: a6xx_gmu.c derives it from the GPU chip
+ * id when the field is zero, which for 0x44030000 gives 0x44031000.
+ */
+
+/* GEN8_VSC_KMD_DBG_ECO_CNTL has no mainline name and is the one entry of the
+ * vendor's list that is not transcribed here. */
+
+static const struct adreno_reglist_pipe a825_nonctxt_regs[] = {
+	{ REG_A8XX_CP_SMMU_STREAM_ID_LPAC, 0x00000101, BIT(PIPE_NONE) },
+	{ REG_A8XX_GRAS_DBG_ECO_CNTL, 0x00000800, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A6XX_PC_AUTO_VERTEX_STRIDE, 0x00000001, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_PC_VIS_STREAM_CNTL, 0x10010000, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_PC_CONTEXT_SWITCH_STABILIZE_CNTL_1, 0x00000002, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_PC_CHICKEN_BITS_1, 0x00000003, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_PC_CHICKEN_BITS_2, 0x00000200, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_PC_CHICKEN_BITS_3, 0x00500000, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_PC_CHICKEN_BITS_4, 0x00500050, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A6XX_UCHE_GBIF_GX_CONFIG, 0x010240e0, BIT(PIPE_NONE) },
+	{ REG_A8XX_RBBM_GBIF_CLIENT_QOS_CNTL, 0x22122212, BIT(PIPE_NONE) },
+	{ REG_A7XX_RB_CCU_CNTL, 0x00000068, BIT(PIPE_BR) },
+	{ REG_A8XX_RB_GC_GMEM_PROTECT, 0x02600000, BIT(PIPE_BR) },
+	{ REG_A8XX_RB_RESOLVE_PREFETCH_CNTL, 0x00000007, BIT(PIPE_BR) },
+	{ REG_A8XX_RB_CMP_DBG_ECO_CNTL, 0x00004000, BIT(PIPE_BR) },
+	{ REG_A8XX_RBBM_NC_MODE_CNTL, 0x00000001, BIT(PIPE_NONE) },
+	{ REG_A8XX_RBBM_SLICE_NC_MODE_CNTL, 0x00000001, BIT(PIPE_NONE) },
+	{ REG_A8XX_RBBM_WAIT_IDLE_CLOCKS_CNTL, 0x00000030, BIT(PIPE_NONE) },
+	{ REG_A8XX_RBBM_WAIT_IDLE_CLOCKS_CNTL2, 0x00000030, BIT(PIPE_NONE) },
+	{ REG_A8XX_RBBM_CGC_P2S_CNTL, 0x00000040, BIT(PIPE_NONE) },
+	{ REG_A6XX_SP_PERFCTR_SHADER_MASK, 0x0000003f, BIT(PIPE_NONE) },
+	/*
+	 * BIT(26): limit the number of wave-slots for the eviction buffer to one
+	 * per ALU GRP. BIT(30): disable LPAC auto-promotion.
+	 */
+	{ REG_A7XX_SP_CHICKEN_BITS_1, BIT(26) | BIT(30), BIT(PIPE_NONE) },
+	/*
+	 * BIT(22): disable PS out-of-order retire. BIT(23): enable half wave mode
+	 * with half-precision MM instruction source and destination.
+	 */
+	{ REG_A7XX_SP_CHICKEN_BITS_2, BIT(22) | BIT(23), BIT(PIPE_NONE) },
+	{ REG_A7XX_SP_CHICKEN_BITS_3, 0x00300000, BIT(PIPE_NONE) },
+	{ REG_A7XX_SP_HLSQ_TIMEOUT_THRESHOLD_DP, 0x00000080, BIT(PIPE_NONE) },
+	{ REG_A6XX_TPL1_DBG_ECO_CNTL, 0x10000000, BIT(PIPE_NONE) },
+	/* Enable cubemap small miplevel optimisation. */
+	{ REG_A6XX_TPL1_DBG_ECO_CNTL1, 0x00000724, BIT(PIPE_NONE) },
+	/* Disable tag bank id hashing. */
+	{ REG_A6XX_UCHE_MODE_CNTL, 0x00080000, BIT(PIPE_NONE) },
+	{ REG_A8XX_UCHE_CCHE_MODE_CNTL, 0x00001000, BIT(PIPE_NONE) },
+	/* Limit the gmem number of ways for GMEM requests in each set. */
+	{ REG_A8XX_UCHE_CCHE_CACHE_WAYS, 0x00000800, BIT(PIPE_NONE) },
+	/* Disable the write slow pointer in the data phase queue. */
+	{ REG_A8XX_UCHE_HW_DBG_CNTL, BIT(8), BIT(PIPE_NONE) },
+	{ REG_A8XX_UCHE_VARB_IDLE_TIMEOUT, 0x00000020, BIT(PIPE_NONE) },
+	{ REG_A7XX_VFD_DBG_ECO_CNTL, 0x00008000, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_VFD_CB_BV_THRESHOLD, 0x00500050, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_VFD_CB_BR_THRESHOLD, 0x00600060, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_VFD_CB_BUSY_REQ_CNT, 0x00200020, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_VFD_CB_LP_REQ_CNT, 0x00000020, BIT(PIPE_BV) | BIT(PIPE_BR) },
+	{ REG_A8XX_VPC_FLATSHADE_MODE_CNTL, 0x00000001, BIT(PIPE_BV) | BIT(PIPE_BR) },
+};
+
+/* The vendor uses gen8_3_0_gbif_cx_regs for this part. */
+static const struct adreno_reglist a825_gbif[] = {
+	{ REG_A6XX_GBIF_QSB_SIDE0, 0x00071e20 },
+	{ REG_A6XX_GBIF_QSB_SIDE1, 0x00071e20 },
+	{ REG_A6XX_GBIF_QSB_SIDE2, 0x00071e20 },
+	{ REG_A6XX_GBIF_QSB_SIDE3, 0x00071e20 },
+	{ REG_A8XX_GBIF_CX_CONFIG, 0x20023000 },
+	{ /* sentinel */ },
+};
+
 static const struct adreno_info a8xx_gpus[] = {
 	{
+		.chip_ids = ADRENO_CHIP_IDS(0x44030000),
+	.family = ADRENO_8XX_GEN2,
+	.fw = {
+		[ADRENO_FW_SQE] = "gen80000_sqe.fw",
+		[ADRENO_FW_GMU] = "gen80600_gmu.bin",
+		[ADRENO_FW_AQE] = "gen80000_aqe.fw",
+	},
+	.gmem = SZ_2M + SZ_256K + SZ_128K,
+	.inactive_period = DRM_MSM_INACTIVE_PERIOD,
+	.quirks = ADRENO_QUIRK_HAS_CACHED_COHERENT |
+		  ADRENO_QUIRK_HAS_HW_APRIV |
+		  ADRENO_QUIRK_PREEMPTION |
+		  ADRENO_QUIRK_IFPC,
+	.funcs = &a8xx_gpu_funcs,
+	.zapfw = "gen80000_zap.mbn",
+	.a6xx = &(const struct a6xx_info) {
+		.nonctxt_reglist = a825_nonctxt_regs,
+		.gbif_cx = a825_gbif,
+		.max_slices = 2,	/* GEN8_6_0_NUM_PHYSICAL_SLICES */
+		/*
+		 * .protect, .pwrup_reglist, .dyn_pwrup_reglist, .ifpc_reglist
+		 * and .bcms are deliberately not set yet. The vendor has no
+		 * pwrup/ifpc/dyn_pwrup arrays to transcribe -- its GPU driver
+		 * builds those from code -- so the mainline a840_* ones would be
+		 * another part's values, which is exactly what must not be
+		 * copied. They are all NULL-tolerant in the driver (checked in
+		 * a8xx_patch_pwrup_reglist), so the GPU can be identified and
+		 * probe without them; .protect is only read once the GPU starts,
+		 * and .bcms only when there is more than one bandwidth level.
+		 * These are the next thing to fill in, from the vendor's
+		 * gen8_0_0_protected_regs and its power-level tables.
+		 */
+	},
+	.preempt_record_size = 3372 * SZ_1K,	/* vendor ctxt_record_size */
+	.speedbins = ADRENO_SPEEDBINS(
+		{ 0, 0 },
+	),
+	}, {
 		.chip_ids = ADRENO_CHIP_IDS(0x44070001),
 		.family = ADRENO_8XX_GEN2,
 		.fw = {
