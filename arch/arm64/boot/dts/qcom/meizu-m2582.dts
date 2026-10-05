@@ -294,7 +294,7 @@
 	 * rail), and the GPU core is parented through the GMU rather than
 	 * declaring a rail of its own.
 	 */
-	status = "disabled";
+	status = "okay";
 
 	operating-points-v2 = <&gpu_opp_table>;
 
@@ -422,10 +422,15 @@
 		 <&gpucc GPU_CC_DEMET_CLK>;
 	clock-names = "ahb", "gmu", "cxo", "memnoc", "hub", "demet";
 
+	/*
+	 * EXPERIMENT: the GX domain is dropped here. gdsc_gx_do_nothing_enable()
+	 * shows the GX rail is not something the CPU powers up -- the GMU does
+	 * it -- so asking genpd to bring it up may be the very step that wedges.
+	 * If the board survives without it, the GX domain is implicated.
+	 */
 	power-domains = <&gpucc GPU_CC_CX_GDSC>,
-			<&gpucc GPU_CC_CX_GMU_GDSC>,
-			<&gxclkctl 0>;
-	power-domain-names = "cx", "gmu", "gx";
+			<&gpucc GPU_CC_CX_GMU_GDSC>;
+	power-domain-names = "cx", "gmu";
 
 	iommus = <&gpu_smmu 5 0>;
 

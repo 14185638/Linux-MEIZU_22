@@ -295,18 +295,6 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 	u32 mask, reset_val, val;
 	int ret;
 
-	/*
-	 * M2582 bring-up test: bail out before the first GMU register access.
-	 * Surviving here means the GMU's power domains and clocks are fine and
-	 * the wedge is in the register traffic itself; wedging here means the
-	 * GMU core is not actually reachable yet and the problem is upstream, in
-	 * the rail and clock bring-up. Same switch as the hw_init gate.
-	 */
-	if (IS_ENABLED(CONFIG_DRM_MSM_M2582_GPU_HW_INIT_GATE)) {
-		dev_warn(gmu->dev,
-			 "M2582 gate: returning from gmu_start before the first GMU read\n");
-		return 0;
-	}
 
 	val = gmu_read(gmu, REG_A6XX_GMU_CM3_DTCM_START + 0xff8);
 	if (val <= 0x20010004) {
