@@ -39,6 +39,9 @@
 #define DEFAULT_TEARCHECK_SYNC_THRESH_START	4
 #define DEFAULT_TEARCHECK_SYNC_THRESH_CONTINUE	4
 
+/* M2582 panel scans at 120 Hz; see dpu_encoder_phys_cmd_tearcheck_config() */
+#define M2582_PANEL_FPS				120
+
 static void dpu_encoder_phys_cmd_enable_te(struct dpu_encoder_phys *phys_enc);
 
 static bool dpu_encoder_phys_cmd_is_master(struct dpu_encoder_phys *phys_enc)
@@ -200,8 +203,17 @@ static int _dpu_encoder_phys_cmd_handle_ppdone_timeout(
 			  cmd_enc->pp_timeout_report_cnt,
 			  atomic_read(&phys_enc->pending_kickoff_cnt));
 		msm_disp_snapshot_state(drm_enc->dev);
-		dpu_core_irq_unregister_callback(phys_enc->dpu_kms,
-				phys_enc->irq[INTR_IDX_RDPTR]);
+		/*
+		 * Keep the RD_PTR callback: it is the CRTC's vblank source, and
+		 * one late frame does not mean the panel is gone.  Dropping it
+		 * leaves vblank_refcount at 1, so no later disable/enable can
+		 * register it again and one timeout kills vblank for the rest of
+		 * the boot.  Unregister only at PP_TIMEOUT_MAX_TRIALS ->
+		 * PANEL_DEAD; the vendor's command-mode encoder has no such path.
+		 */
+		if (frame_event & DPU_ENCODER_FRAME_EVENT_PANEL_DEAD)
+			dpu_core_irq_unregister_callback(phys_enc->dpu_kms,
+							 phys_enc->irq[INTR_IDX_RDPTR]);
 	}
 
 	atomic_add_unless(&phys_enc->pending_kickoff_cnt, -1, 0);
@@ -388,31 +400,24 @@ static void dpu_encoder_phys_cmd_tearcheck_config(
 		return;
 	}
 
-	tc_cfg.vsync_count = vsync_hz /
-				(mode->vtotal * drm_mode_vrefresh(mode));
-
 	/*
 	 * M2582: drm_mode_vrefresh() divides mode->clock by htotal*vtotal, and
 	 * msm_dsi derives the DSI link rate from that same mode->clock, so it
-	 * reports ~184 Hz for this 120 Hz panel. The tear-check counter has to
-	 * count at the rate the panel actually scans at.
+	 * reports ~184 Hz for this 120 Hz panel. The tear-check counter divides
+	 * the MDP vsync clock down to the panel's *line* rate, so it has to work
+	 * from the rate the panel actually scans at.
 	 */
-#define M2582_PANEL_FPS	120
 	tc_cfg.vsync_count = vsync_hz / (mode->vtotal * M2582_PANEL_FPS);
 
 	/*
-	 * M2582: hw_vsync_mode would make the tear-check counter use the
-	 * interface's own hardware vsync; the panel's TE signal is wired to
-	 * this DPU and must drive it instead (upstream sets this bit).
+	 * M2582: hw_vsync_mode is BIT(20) of INTF_TEAR_SYNC_CONFIG_VSYNC, the
+	 * vendor's connect_external_te: advance the write pointer on the panel's
+	 * TE pulse.  The factory drives this panel with hw_vsync_mode = 1 and
+	 * sync_cfg_height = 0xFFF0 (near maximum suppresses the block's own TE
+	 * generation), and _dpu_encoder_phys_cmd_connect_te() re-enables the
+	 * external TE after every kickoff to avoid a premature autorefresh.
 	 */
-	tc_cfg.hw_vsync_mode = 0;
-
-	/*
-	 * M2582: a near-maximum sync_cfg_height suppresses the tear-check
-	 * block's own hardware TE generation, so only the panel's TE pulse can
-	 * advance the write pointer. With the upstream twice-vtotal value the
-	 * DPU latches to a self-generated frame boundary instead of the panel.
-	 */
+	tc_cfg.hw_vsync_mode = 1;
 	tc_cfg.sync_cfg_height = 0xFFF0;
 	tc_cfg.vsync_init_val = mode->vdisplay;
 	tc_cfg.sync_threshold_start = DEFAULT_TEARCHECK_SYNC_THRESH_START;
@@ -437,6 +442,12 @@ static void dpu_encoder_phys_cmd_tearcheck_config(
 		tc_cfg.sync_cfg_height, tc_cfg.sync_threshold_start,
 		tc_cfg.sync_threshold_continue);
 
+	/*
+	 * The ping-pong's own tear check is not available on this generation:
+	 * dpu_hw_pingpong_init() only assigns its tear ops for cores older than
+	 * DPU 5, so on a command-mode panel everything goes through the
+	 * interface.
+	 */
 	if (phys_enc->has_intf_te)
 		phys_enc->hw_intf->ops.enable_tearcheck(phys_enc->hw_intf, &tc_cfg);
 	else
@@ -465,14 +476,14 @@ static void _dpu_encoder_phys_cmd_pingpong_config(
 
 /*
  * M2582: upstream only programs the interface timing generator from the video
- * encoder, so a command-mode interface keeps it disabled. Do that explicitly
+ * encoder, so a command-mode interface keeps it disabled.  Do that explicitly
  * here too: a warm restart can leave the block running.
  */
 static void dpu_encoder_phys_cmd_setup_timing_engine(
 		struct dpu_encoder_phys *phys_enc)
 {
 	if (!phys_enc->hw_intf || !phys_enc->hw_intf->ops.enable_timing) {
-		DPU_ERROR("M2582: intf timing engine not available\n");
+		DPU_ERROR("intf timing engine not available\n");
 		return;
 	}
 

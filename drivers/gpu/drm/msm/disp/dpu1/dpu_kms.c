@@ -1226,6 +1226,39 @@ static int dpu_kms_hw_init(struct msm_kms *kms)
 
 	dpu_kms->hw_vbif = hw;
 
+	/*
+	 * M2582: program every XIN's real-time QoS remap and read
+	 * outstanding-transaction limit the way the factory's device tree does.
+	 * Upstream applies these only from the writeback encoder, which leaves
+	 * this board's command-mode panel reading its frames out with the reset
+	 * priorities.  The values are in tuna_vbif
+	 * (catalog/dpu_12_3_tuna.h).
+	 */
+	if (hw->ops.set_qos_remap) {
+		struct dpu_vbif_set_qos_params qos = { .is_rt = true };
+		int xin;
+
+		for (xin = 0; xin < MAX_XIN_COUNT; xin++) {
+			qos.xin_id = xin;
+			qos.num = xin;
+			dpu_vbif_set_qos_remap(dpu_kms, &qos);
+		}
+	}
+
+	if (hw->ops.set_limit_conf && hw->ops.set_halt_ctrl) {
+		struct dpu_vbif_set_ot_params ot = { .rd = true };
+		int xin;
+
+		for (xin = 0; xin < MAX_XIN_COUNT; xin++) {
+			ot.xin_id = xin;
+			ot.num = xin;
+			ot.width = 1200;
+			ot.height = 2670;
+			ot.frame_rate = 120;
+			dpu_vbif_set_ot_limit(dpu_kms, &ot);
+		}
+	}
+
 	/* TODO: use the same max_freq as in dpu_kms_hw_init */
 	max_core_clk_rate = dpu_kms_get_clk_rate(dpu_kms, "core");
 	if (!max_core_clk_rate) {

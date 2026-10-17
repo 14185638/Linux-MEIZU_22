@@ -1963,29 +1963,72 @@ int dpu_encoder_vsync_time(struct drm_encoder *drm_enc, ktime_t *wakeup_time)
 	return 0;
 }
 
+/*
+ * The DCE must hold back as many lines as the decoder's rate buffer model
+ * expects filled: use the DPU 12.x vendor formula
+ * (sde_hw_dsc_initial_line_calc()) over the pipeline (sub-stream multiplexer,
+ * output buffer, output data width), not the upstream three-mux-delays +
+ * 47 pixels.  For this panel's 600x30 slice at 8bpp/10bpc that is 3 lines
+ * vs 2: one slice line is 600 bytes against an 8 Kbit rate buffer model.
+ */
 static u32
 dpu_encoder_dsc_initial_line_calc(struct drm_dsc_config *dsc,
-				  u32 enc_ip_width)
+				  u32 num_active_ss, u32 common_mode)
 {
-	int ssm_delay, total_pixels, soft_slice_per_enc;
+	int max_ssm_delay, max_se_size, max_muxword_size;
+	int compress_bpp_group, obuf_latency, input_ssm_out_latency;
+	int base_hs_latency, chunk_bits, ob_data_width;
+	int output_rate_extra_budget_bits, multi_hs_extra_budget_bits;
+	int multi_hs_extra_latency, mux_word_size;
+	int ob_data_width_4comps, ob_data_width_3comps;
+	int output_rate_ratio_complement, container_slice_width;
+	int rtl_num_components, multi_hs_c, multi_hs_d;
+	int bpc = dsc->bits_per_component;
+	int bpp = dsc->bits_per_pixel >> 4;
+	bool native_422 = dsc->native_422;
+	int multiplex_mode_enable = !!(common_mode & DSC_MODE_MULTIPLEX);
+	int split_panel_enable = !!(common_mode & DSC_MODE_SPLIT_PANEL);
+	int rtl_max_bpc = 10, rtl_output_data_width = 64;
+	int pipeline_latency = 28;
 
-	soft_slice_per_enc = enc_ip_width / dsc->slice_width;
+	container_slice_width = native_422 ?
+			dsc->slice_width / 2 : dsc->slice_width;
+	max_muxword_size = (rtl_max_bpc >= 12) ? 64 : 48;
+	max_se_size = 4 * (rtl_max_bpc + 1);
+	max_ssm_delay = max_se_size + max_muxword_size - 1;
+	mux_word_size = (bpc >= 12) ? 64 : 48;
+	compress_bpp_group = native_422 ? (2 * bpp) : bpp;
+	input_ssm_out_latency = pipeline_latency + 3 * (max_ssm_delay + 2)
+			* num_active_ss;
+	rtl_num_components = (dsc->native_420 || native_422) ? 4 : 3;
+	ob_data_width_4comps = (rtl_output_data_width >= (2 *
+			max_muxword_size)) ?
+			rtl_output_data_width :
+			(2 * rtl_output_data_width);
+	ob_data_width_3comps = (rtl_output_data_width >= max_muxword_size) ?
+			rtl_output_data_width : 2 * rtl_output_data_width;
+	ob_data_width = (rtl_num_components == 4) ?
+			ob_data_width_4comps : ob_data_width_3comps;
+	obuf_latency = DIV_ROUND_UP((9 * ob_data_width + mux_word_size),
+				    compress_bpp_group) + 1;
+	base_hs_latency = dsc->initial_xmit_delay +
+		input_ssm_out_latency + obuf_latency;
+	chunk_bits = 8 * dsc->slice_chunk_size;
+	output_rate_ratio_complement = ob_data_width - compress_bpp_group;
+	output_rate_extra_budget_bits =
+		(output_rate_ratio_complement * chunk_bits) >>
+		((ob_data_width == 128) ? 7 : 6);
+	multi_hs_c = split_panel_enable * multiplex_mode_enable;
+	multi_hs_d = (num_active_ss > 1) *
+			(ob_data_width > compress_bpp_group);
+	multi_hs_extra_budget_bits = multi_hs_c ?
+				chunk_bits : (multi_hs_d ? chunk_bits :
+					output_rate_extra_budget_bits);
+	multi_hs_extra_latency = DIV_ROUND_UP(multi_hs_extra_budget_bits,
+					      compress_bpp_group);
 
-	/*
-	 * minimum number of initial line pixels is a sum of:
-	 * 1. sub-stream multiplexer delay (83 groups for 8bpc,
-	 *    91 for 10 bpc) * 3
-	 * 2. for two soft slice cases, add extra sub-stream multiplexer * 3
-	 * 3. the initial xmit delay
-	 * 4. total pipeline delay through the "lock step" of encoder (47)
-	 * 5. 6 additional pixels as the output of the rate buffer is
-	 *    48 bits wide
-	 */
-	ssm_delay = ((dsc->bits_per_component < 10) ? 84 : 92);
-	total_pixels = ssm_delay * 3 + dsc->initial_xmit_delay + 47;
-	if (soft_slice_per_enc > 1)
-		total_pixels += (ssm_delay * 3);
-	return DIV_ROUND_UP(total_pixels, dsc->slice_width);
+	return DIV_ROUND_UP((base_hs_latency + multi_hs_extra_latency),
+			container_slice_width);
 }
 
 static void dpu_encoder_dsc_pipe_cfg(struct dpu_hw_ctl *ctl,
@@ -2021,10 +2064,8 @@ static void dpu_encoder_prep_dsc(struct dpu_encoder_virt *dpu_enc,
 	struct dpu_hw_ctl *ctl = enc_master->hw_ctl;
 	struct dpu_hw_dsc *hw_dsc[MAX_CHANNELS_PER_ENC];
 	struct dpu_hw_pingpong *hw_pp[MAX_CHANNELS_PER_ENC];
-	int this_frame_slices;
-	int intf_ip_w, enc_ip_w;
 	int dsc_common_mode;
-	int pic_width;
+	u32 num_active_ss;
 	u32 initial_lines;
 	int num_dsc = 0;
 	int i;
@@ -2039,8 +2080,6 @@ static void dpu_encoder_prep_dsc(struct dpu_encoder_virt *dpu_enc,
 		num_dsc++;
 	}
 
-	pic_width = dsc->pic_width;
-
 	dsc_common_mode = 0;
 	if (num_dsc > 1)
 		dsc_common_mode |= DSC_MODE_SPLIT_PANEL;
@@ -2049,11 +2088,12 @@ static void dpu_encoder_prep_dsc(struct dpu_encoder_virt *dpu_enc,
 	if (enc_master->intf_mode == INTF_MODE_VIDEO)
 		dsc_common_mode |= DSC_MODE_VIDEO;
 
-	this_frame_slices = pic_width / dsc->slice_width;
-	intf_ip_w = this_frame_slices * dsc->slice_width;
+	num_active_ss = dsc->slice_count;
+	if (dsc_common_mode & DSC_MODE_MULTIPLEX)
+		num_active_ss = dsc->slice_count / 2;
 
-	enc_ip_w = intf_ip_w / num_dsc;
-	initial_lines = dpu_encoder_dsc_initial_line_calc(dsc, enc_ip_w);
+	initial_lines = dpu_encoder_dsc_initial_line_calc(dsc, num_active_ss,
+							  dsc_common_mode);
 
 	for (i = 0; i < num_dsc; i++)
 		dpu_encoder_dsc_pipe_cfg(ctl, hw_dsc[i], hw_pp[i],
@@ -2136,10 +2176,23 @@ void dpu_encoder_start_frame_done_timer(struct drm_encoder *drm_enc)
 {
 	struct dpu_encoder_virt *dpu_enc;
 	unsigned long timeout_ms;
+	unsigned int fps;
 
 	dpu_enc = to_dpu_encoder_virt(drm_enc);
-	timeout_ms = DPU_ENCODER_FRAME_DONE_TIMEOUT_FRAMES * 1000 /
-			drm_mode_vrefresh(&drm_enc->crtc->state->adjusted_mode);
+	fps = drm_mode_vrefresh(&drm_enc->crtc->state->adjusted_mode);
+	/*
+	 * The vendor timeout (sde_encoder_helper_get_kickoff_timeout_ms()):
+	 * 84 ms flat at 24 fps and above (DEFAULT_KICKOFF_TIMEOUT_MS), else
+	 * DEFAULT_TIMEOUT_FPS_THRESHOLD frames.  drm_mode_vrefresh() is not the
+	 * panel's frame rate here -- the mode clock comes from the DSI link
+	 * rate, so vrefresh reads ~184 Hz and five of those is 27 ms, too short
+	 * for the first frame after a cold boot.
+	 */
+	if (fps >= 24)
+		timeout_ms = 84;
+	else
+		timeout_ms = DPU_ENCODER_FRAME_DONE_TIMEOUT_FRAMES * 1000 /
+				max(fps, 1);
 
 	atomic_set(&dpu_enc->frame_done_timeout_ms, timeout_ms);
 	mod_timer(&dpu_enc->frame_done_timer,

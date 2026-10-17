@@ -948,9 +948,17 @@ static int dpu_plane_split(struct drm_plane *plane,
 		DPU_DEBUG_PLANE(pdpu, "Got clip src:" DRM_RECT_FMT " dst: " DRM_RECT_FMT "\n",
 				DRM_RECT_ARG(&pipe_cfg->src_rect), DRM_RECT_ARG(&pipe_cfg->dst_rect));
 
-		/* Split wide rect into 2 rect */
+		/*
+		 * Split wide rect into 2 rect.
+		 *
+		 * This panel runs the factory's 2:2:1 topology (two mixers, two
+		 * DSC encoders, one interface), so the plane has to be spread
+		 * over both mixers even when one SSPP could carry the line
+		 * width and the MDP clock on its own.
+		 */
 		if ((drm_rect_width(&pipe_cfg->src_rect) > max_linewidth) ||
-		     _dpu_plane_calc_clk(mode, pipe_cfg) > max_mdp_clk_rate) {
+		     _dpu_plane_calc_clk(mode, pipe_cfg) > max_mdp_clk_rate ||
+		     num_lm > 1) {
 
 			if (drm_rect_width(&pipe_cfg->src_rect) > 2 * max_linewidth) {
 				DPU_DEBUG_PLANE(pdpu, "invalid src " DRM_RECT_FMT " line:%u\n",
@@ -1781,7 +1789,16 @@ static bool dpu_plane_format_mod_supported(struct drm_plane *plane,
 		uint32_t format, uint64_t modifier)
 {
 	struct dpu_kms *dpu_kms = _dpu_plane_get_kms(plane);
-	bool has_no_ubwc = (dpu_kms->mdss->ubwc_enc_version == 0);
+	/*
+	 * UBWC scanout needs both halves of the configuration: the GPU writes
+	 * tiled, the display decoder reads tiled, and the two have to agree on
+	 * the layout.  A platform can have the encoder side described and the
+	 * decoder side not, and in that state offering the modifier does not
+	 * fail -- it produces a picture made of UBWC tiles, which is much harder
+	 * to attribute than a rejected format.  So require both.
+	 */
+	bool has_no_ubwc = (dpu_kms->mdss->ubwc_enc_version == 0 ||
+			    dpu_kms->mdss->ubwc_dec_version == 0);
 
 	if (modifier == DRM_FORMAT_MOD_LINEAR)
 		return true;

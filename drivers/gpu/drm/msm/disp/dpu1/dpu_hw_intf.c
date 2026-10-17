@@ -301,8 +301,15 @@ static void dpu_hw_intf_enable_timing_engine(
 		u8 enable)
 {
 	struct dpu_hw_blk_reg_map *c = &intf->hw;
-	/* Note: Display interface select is handled in top block hw layer */
-	DPU_REG_WRITE(c, INTF_TIMING_ENGINE_EN, enable != 0);
+	/*
+	 * Note: Display interface select is handled in top block hw layer.
+	 *
+	 * Write the value the bootloader leaves here (DisplayDxe, 0x323AC)
+	 * rather than 1: bits 4, 20 and 24 keep the interface's vsync counter
+	 * running, and without them the tear check never latches a frame and
+	 * every command-mode kickoff times out in wait_for_idle.
+	 */
+	DPU_REG_WRITE(c, INTF_TIMING_ENGINE_EN, enable ? 0x1801011 : 0);
 
 	/*
 	 * The timestamp block has to be enabled together with the timing
@@ -677,6 +684,16 @@ static void dpu_hw_intf_program_intf_cmd_cfg(struct dpu_hw_intf *intf,
 
 	if (cmd_mode_cfg->wide_bus_en)
 		intf_cfg2 |= INTF_CFG2_DATABUS_WIDEN;
+
+	/*
+	 * The factory's DisplayDxe writes INTF_CONFIG2 with DATA_HCTL_EN
+	 * (BIT(4)) set on this board, in command mode as well: its writes are
+	 * |= 0x11 and |= 0x1011 (DATABUS_WIDEN, DATA_HCTL_EN, DCE_DATA_COMPRESS).
+	 * Upstream only sets it from the video timing path, but its own comment
+	 * on the bit says to enable it except for 1-pixel-per-clock compression,
+	 * and this panel is 2 pixels per clock with compression.
+	 */
+	intf_cfg2 |= INTF_CFG2_DATA_HCTL_EN;
 
 	DPU_REG_WRITE(&intf->hw, INTF_CONFIG2, intf_cfg2);
 }

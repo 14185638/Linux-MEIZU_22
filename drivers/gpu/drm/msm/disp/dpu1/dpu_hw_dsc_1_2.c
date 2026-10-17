@@ -133,6 +133,14 @@ static void dpu_hw_dsc_config_1_2(struct dpu_hw_dsc *hw_dsc,
 	    dsc->bits_per_component > 8)
 		data |= BIT(12);
 
+	/*
+	 * ENC_DF_CTRL[10:11] force the ICH reset position.  The factory only
+	 * sets them for a partial update whose slice_count is greater than one
+	 * and whose slice_width equals the picture width
+	 * (_dce_dsc_ich_reset_override_needed in sde_encoder_dce.c); this panel
+	 * drives two slices per line, so the hardware's own choice is the one
+	 * the decoder expects and the bits stay clear.
+	 */
 	data |= (_dsc_calc_output_buf_max_addr(hw_dsc, num_active_slice_per_enc) << 18);
 
 	DPU_REG_WRITE(hw, sblk->enc.base + ENC_DF_CTRL, data);
@@ -243,7 +251,13 @@ static void dpu_hw_dsc_config_1_2(struct dpu_hw_dsc *hw_dsc,
 		data |= BIT(12);
 	if (mode & DSC_MODE_MULTIPLEX)
 		data |= BIT(13);
-	if (!(mode & DSC_MODE_VIDEO))
+	/*
+	 * BIT(17) is the video-mode flag, so it must stay clear in command mode.
+	 * BIT(16) belongs to the four-hard-slice merge path, which the factory
+	 * enables only with dsc_4hsmerge_en and four DSC encoders on one
+	 * interface; this panel drives two, so it stays clear as well.
+	 */
+	if (mode & DSC_MODE_VIDEO)
 		data |= BIT(17);
 
 	DPU_REG_WRITE(hw, sblk->ctl.base + DSC_CFG, data);
