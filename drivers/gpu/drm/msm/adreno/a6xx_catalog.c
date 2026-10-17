@@ -2364,20 +2364,12 @@ static const struct adreno_reglist_pipe a840_dyn_pwrup_reglist_regs[] = {
 DECLARE_ADRENO_REGLIST_PIPE_LIST(a840_dyn_pwrup_reglist);
 
 /*
- * Meizu 22 (M2582): Adreno 825. The register values below are transcribed from
- * the vendor's graphics source, entry adreno_gpu_core_gen8_6_0 in
- * adreno-gpulist.h (vendor-ref/oneplus-dt/vendor/qcom/opensource/graphics-kernel),
- * and must not be copied from the sibling a8xx entries: comparing mainline's
- * a840_nonctxt_regs against the vendor's gen8_6_0_nonctxt_regs gives 36 common
- * registers with 5 differing values, 14 present only in mainline and 3 only in
- * the vendor, so those are different parts of the same generation.
- *
- * The firmware names cannot be derived from the chip id either -- the vendor
- * mixes generations: gen80000 for SQE/AQE/ZAP and gen80600 for the GMU. All
- * four files exist in this device's /vendor/firmware.
- *
- * gmu_chipid is left zero on purpose: a6xx_gmu.c derives it from the GPU chip
- * id when the field is zero, which for 0x44030000 gives 0x44031000.
+ * Adreno 825 (gen8_6_0).  The register values below are transcribed from the
+ * vendor's adreno_gpu_core_gen8_6_0 entry in adreno-gpulist.h, not from the
+ * sibling a8xx entries: mainline's a840_nonctxt_regs differs from the vendor's
+ * gen8_6_0 list in 5 values and 17 registers.  The firmware names cannot be
+ * derived from the chip id either -- the vendor mixes generations, gen80000
+ * for SQE/AQE/ZAP and gen80600 for the GMU.
  */
 
 /* GEN8_VSC_KMD_DBG_ECO_CNTL has no mainline name and is the one entry of the
@@ -2446,6 +2438,82 @@ static const struct adreno_reglist a825_gbif[] = {
 	{ /* sentinel */ },
 };
 
+/*
+ * Access protection for the Adreno 825, transcribed from the vendor's
+ * gen8_0_0_protected_regs in msm_kgsl.ko (.rodata+0x6c98).  Not optional:
+ * a8xx_set_cp_protect() dereferences .protect without a NULL check, so an
+ * entry without it oopses part way through bring-up.  Each vendor record is
+ * {CP_PROTECT(n), start, end, flags}, packed here as ((end - start) << 18) |
+ * start with BIT(31) for no-read-no-write (see A6XX_PROTECT_* in a6xx_gpu.h).
+ */
+static const u32 a825_protect_regs[] = {
+	A6XX_PROTECT_RDONLY(0x00000, 0x03a3),	/* CP_PROTECT(0) */
+	A6XX_PROTECT_RDONLY(0x003b4, 0x008b),	/* CP_PROTECT(1) */
+	A6XX_PROTECT_NORDWR(0x00440, 0x001f),	/* CP_PROTECT(2) */
+	A6XX_PROTECT_RDONLY(0x00580, 0x005f),	/* CP_PROTECT(3) */
+	A6XX_PROTECT_NORDWR(0x005e0, 0x011f),	/* CP_PROTECT(4) */
+	A6XX_PROTECT_RDONLY(0x0074a, 0x0005),	/* CP_PROTECT(5) */
+	A6XX_PROTECT_RDONLY(0x00759, 0x0026),	/* CP_PROTECT(6) */
+	A6XX_PROTECT_RDONLY(0x00789, 0x0000),	/* CP_PROTECT(7) */
+	A6XX_PROTECT_RDONLY(0x0078c, 0x0013),	/* CP_PROTECT(8) */
+	A6XX_PROTECT_NORDWR(0x00800, 0x0029),	/* CP_PROTECT(9) */
+	A6XX_PROTECT_NORDWR(0x00837, 0x00af),	/* CP_PROTECT(10) */
+	A6XX_PROTECT_RDONLY(0x008e7, 0x00c9),	/* CP_PROTECT(11) */
+	A6XX_PROTECT_NORDWR(0x008ec, 0x00c3),	/* CP_PROTECT(12) */
+	A6XX_PROTECT_NORDWR(0x009b1, 0x0250),	/* CP_PROTECT(13) */
+	A6XX_PROTECT_RDONLY(0x00ce0, 0x0001),	/* CP_PROTECT(14) */
+	A6XX_PROTECT_RDONLY(0x00df0, 0x0000),	/* CP_PROTECT(15) */
+	A6XX_PROTECT_NORDWR(0x00df1, 0x0000),	/* CP_PROTECT(16) */
+	A6XX_PROTECT_NORDWR(0x00e01, 0x0000),	/* CP_PROTECT(17) */
+	A6XX_PROTECT_NORDWR(0x00e03, 0x1fff),	/* CP_PROTECT(18) */
+	A6XX_PROTECT_NORDWR(0x03c00, 0x00c5),	/* CP_PROTECT(19) */
+	A6XX_PROTECT_RDONLY(0x03cc6, 0x1fff),	/* CP_PROTECT(20) */
+	A6XX_PROTECT_NORDWR(0x08600, 0x01ff),	/* CP_PROTECT(21) */
+	A6XX_PROTECT_NORDWR(0x08e00, 0x00ff),	/* CP_PROTECT(22) */
+	A6XX_PROTECT_RDONLY(0x08f00, 0x0000),	/* CP_PROTECT(23) */
+	A6XX_PROTECT_NORDWR(0x08f01, 0x01be),	/* CP_PROTECT(24) */
+	A6XX_PROTECT_NORDWR(0x09600, 0x01ff),	/* CP_PROTECT(25) */
+	A6XX_PROTECT_RDONLY(0x0981a, 0x02e5),	/* CP_PROTECT(26) */
+	A6XX_PROTECT_NORDWR(0x09e00, 0x01ff),	/* CP_PROTECT(27) */
+	A6XX_PROTECT_NORDWR(0x0a600, 0x01ff),	/* CP_PROTECT(28) */
+	A6XX_PROTECT_NORDWR(0x0ae00, 0x0000),	/* CP_PROTECT(29) */
+	A6XX_PROTECT_NORDWR(0x0ae02, 0x0004),	/* CP_PROTECT(30) */
+	A6XX_PROTECT_NORDWR(0x0ae08, 0x0006),	/* CP_PROTECT(31) */
+	A6XX_PROTECT_NORDWR(0x0ae10, 0x036f),	/* CP_PROTECT(32) */
+	A6XX_PROTECT_NORDWR(0x0b600, 0x1fff),	/* CP_PROTECT(33) */
+	A6XX_PROTECT_NORDWR(0x0dc00, 0x1fff),	/* CP_PROTECT(34) */
+	A6XX_PROTECT_RDONLY(0x0fc00, 0x1fff),	/* CP_PROTECT(35) */
+	A6XX_PROTECT_NORDWR(0x18400, 0x003f),	/* CP_PROTECT(36) */
+	A6XX_PROTECT_RDONLY(0x18440, 0x013f),	/* CP_PROTECT(37) */
+	A6XX_PROTECT_NORDWR(0x18580, 0x1fff),	/* CP_PROTECT(38) */
+	A6XX_PROTECT_NORDWR(0x1b400, 0x1fff),	/* CP_PROTECT(39) */
+	A6XX_PROTECT_NORDWR(0x1f400, 0x0477),	/* CP_PROTECT(40) */
+	A6XX_PROTECT_RDONLY(0x1f878, 0x0787),	/* CP_PROTECT(41) */
+	A6XX_PROTECT_NORDWR(0x1f930, 0x0329),	/* CP_PROTECT(42) */
+	A6XX_PROTECT_NORDWR(0x20000, 0x1fff),	/* CP_PROTECT(43) */
+	A6XX_PROTECT_NORDWR(0x27800, 0x007f),	/* CP_PROTECT(44) */
+	A6XX_PROTECT_RDONLY(0x27880, 0x0381),	/* CP_PROTECT(45) */
+	A6XX_PROTECT_NORDWR(0x27882, 0x0001),	/* CP_PROTECT(46) */
+	0,			/* CP_PROTECT(47): not in the vendor table */
+	0,			/* CP_PROTECT(48): not in the vendor table */
+	0,			/* CP_PROTECT(49): not in the vendor table */
+	0,			/* CP_PROTECT(50): not in the vendor table */
+	0,			/* CP_PROTECT(51): not in the vendor table */
+	0,			/* CP_PROTECT(52): not in the vendor table */
+	0,			/* CP_PROTECT(53): not in the vendor table */
+	0,			/* CP_PROTECT(54): not in the vendor table */
+	0,			/* CP_PROTECT(55): not in the vendor table */
+	0,			/* CP_PROTECT(56): not in the vendor table */
+	0,			/* CP_PROTECT(57): not in the vendor table */
+	0,			/* CP_PROTECT(58): not in the vendor table */
+	0,			/* CP_PROTECT(59): not in the vendor table */
+	0,			/* CP_PROTECT(60): not in the vendor table */
+	0,			/* CP_PROTECT(61): not in the vendor table */
+	0,			/* CP_PROTECT(62): not in the vendor table */
+	A6XX_PROTECT_NORDWR(0x27c02, 0x0000),	/* CP_PROTECT(63) */
+};
+DECLARE_ADRENO_PROTECT(a825_protect, 64);
+
 static const struct adreno_info a8xx_gpus[] = {
 	{
 		.chip_ids = ADRENO_CHIP_IDS(0x44030000),
@@ -2457,29 +2525,49 @@ static const struct adreno_info a8xx_gpus[] = {
 	},
 	.gmem = SZ_2M + SZ_256K + SZ_128K,
 	.inactive_period = DRM_MSM_INACTIVE_PERIOD,
+	/*
+	 * ADRENO_QUIRK_IFPC stays off: it sets idle_level to GMU_IDLE_STATE_IFPC,
+	 * a6xx_hfi_enable_ifpc() sends HFI_FEATURE_IFPC and the firmware collapses
+	 * the GPU by itself, which this board's CX domain does not survive.
+	 * ADRENO_QUIRK_PREEMPTION stays off too, keeping nr_rings at 1: four rings
+	 * make the CP preempt between them and consume the pwrup/ifpc/dyn_pwrup
+	 * lists this entry leaves NULL, so nothing renders.
+	 */
 	.quirks = ADRENO_QUIRK_HAS_CACHED_COHERENT |
-		  ADRENO_QUIRK_HAS_HW_APRIV |
-		  ADRENO_QUIRK_PREEMPTION |
-		  ADRENO_QUIRK_IFPC,
+		  ADRENO_QUIRK_HAS_HW_APRIV,
 	.funcs = &a8xx_gpu_funcs,
 	.zapfw = "gen80000_zap.mbn",
 	.a6xx = &(const struct a6xx_info) {
 		.nonctxt_reglist = a825_nonctxt_regs,
+		.protect = &a825_protect,
 		.gbif_cx = a825_gbif,
 		.max_slices = 2,	/* GEN8_6_0_NUM_PHYSICAL_SLICES */
 		/*
-		 * .protect, .pwrup_reglist, .dyn_pwrup_reglist, .ifpc_reglist
-		 * and .bcms are deliberately not set yet. The vendor has no
-		 * pwrup/ifpc/dyn_pwrup arrays to transcribe -- its GPU driver
-		 * builds those from code -- so the mainline a840_* ones would be
-		 * another part's values, which is exactly what must not be
-		 * copied. They are all NULL-tolerant in the driver (checked in
-		 * a8xx_patch_pwrup_reglist), so the GPU can be identified and
-		 * probe without them; .protect is only read once the GPU starts,
-		 * and .bcms only when there is more than one bandwidth level.
-		 * These are the next thing to fill in, from the vendor's
-		 * gen8_0_0_protected_regs and its power-level tables.
+		 * gmu_chipid is the GMU's own numbering, ADRENO_GMU_REV(major,
+		 * minor, patch), not the GPU chip id: the firmware's GmuPwrGetSettings
+		 * reads GENERAL_10 and matches it against 0x08000000..0x08060000,
+		 * failing fatally when nothing matches.  This part is gen8_6_0 (vendor
+		 * DT qcom,adreno-gpu-gen8-6-0, firmware gen80600_gmu.bin), so the
+		 * encoding is (8 << 24) | (6 << 16).
 		 */
+		.gmu_chipid = 0x08060000,
+		/*
+		 * The GMU's DDR bandwidth vote table, byte for byte from the vendor's
+		 * BCM list (msm_kgsl.ko .data + 0x17a68, three 0x18-byte entries:
+		 * "SH0" buswidth 16, "MC0" buswidth 4, "ACV" fixed).  ACV's perfmode
+		 * is zero because the vendor injects it at runtime from its level table,
+		 * where mainline's other a8xx entries hardcode a value.  Inert until the
+		 * GPU OPP table grows opp-peak-kBps.
+		 */
+		.bcms = (const struct a6xx_bcm[]) {
+			{ .name = "SH0", .buswidth = 16 },
+			{ .name = "MC0", .buswidth = 4 },
+			{
+				.name = "ACV",
+				.fixed = true,
+			},
+			{ /* sentinel */ },
+		},
 	},
 	.preempt_record_size = 3372 * SZ_1K,	/* vendor ctxt_record_size */
 	.speedbins = ADRENO_SPEEDBINS(

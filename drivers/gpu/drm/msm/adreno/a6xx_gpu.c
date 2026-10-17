@@ -2725,11 +2725,6 @@ static struct msm_gpu *a6xx_gpu_init(struct drm_device *dev)
 	else
 		a6xx_gpu->cx_misc_mmio = NULL;
 
-	/* M2582 bring-up probe, temporary. */
-	dev_warn(&pdev->dev,
-		 "M2582 probe: is_a7xx=%d have_mmu500=%d cx_misc_mmio=%px\n",
-		 is_a7xx, a6xx_gpu->have_mmu500, a6xx_gpu->cx_misc_mmio);
-
 	ret = a6xx_set_supported_hw(&pdev->dev, a6xx_gpu, info);
 	if (ret) {
 		a6xx_llc_slices_destroy(a6xx_gpu);
@@ -2907,6 +2902,12 @@ const struct adreno_gpu_funcs a8xx_gpu_funcs = {
 		.active_ring = a6xx_active_ring,
 		.irq = a8xx_irq,
 		.destroy = a6xx_destroy,
+		/*
+		 * No .show and no .gpu_state_get on a8xx: a6xx_gpu_state.c walks
+		 * the a7xx register tables and has no a8xx support, so its first
+		 * GMU read takes a synchronous external abort.  Do not add the
+		 * two callbacks without teaching that file about this part.
+		 */
 		.gpu_busy = a8xx_gpu_busy,
 		.gpu_get_freq = a6xx_gmu_get_freq,
 		.gpu_set_freq = a6xx_gpu_set_freq,
