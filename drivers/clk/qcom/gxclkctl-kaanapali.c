@@ -25,9 +25,18 @@ static struct gdsc gx_clkctl_gx_gdsc = {
 	.pd = {
 		.name = "gx_clkctl_gx_gdsc",
 		.power_on = gdsc_gx_do_nothing_enable,
+		/*
+		 * GX is the firmware's domain: the OS must only force it down on
+		 * the GMU recovery path (domain->synced_poweroff), otherwise
+		 * system resume powers every domain down in complete() and takes
+		 * GX away while the firmware is still using it.
+		 */
+		.power_off = gdsc_gx_disable,
 	},
 	.pwrsts = PWRSTS_OFF_ON,
 	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+	/* the vendor device tree names this rail on the gxclkctl node */
+	.supply = "vdd_gx",
 };
 
 static struct gdsc *gx_clkctl_gdscs[] = {
@@ -38,7 +47,8 @@ static const struct regmap_config gx_clkctl_regmap_config = {
 	.reg_bits = 32,
 	.reg_stride = 4,
 	.val_bits = 32,
-	.max_register = 0x4038,
+	/* the block is a 0x6000 window, not a 0x4038 one */
+	.max_register = 0x6000,
 	.fast_io = true,
 };
 

@@ -394,7 +394,15 @@ static struct gdsc gpu_cc_cx_gdsc = {
 		.name = "gpu_cc_cx_gdsc",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
+	/*
+	 * The vendor's GDSC carries RETAIN_FF_ENABLE | VOTABLE and names its
+	 * supply; without the supply, gdsc_toggle_logic() skips both the CX
+	 * rail vote before the power-on request and the release after the
+	 * collapse, and this domain cannot come back up.  See the gpucc node's
+	 * vdd_cx-supply in tuna.dtsi.
+	 */
 	.flags = RETAIN_FF_ENABLE | VOTABLE,
+	.supply = "vdd_cx",
 };
 
 static int gdsc_cx_do_nothing(struct generic_pm_domain *domain)
@@ -445,6 +453,14 @@ static struct gdsc gx_clkctl_gx_gdsc = {
 	},
 	.pwrsts = PWRSTS_OFF_ON,
 	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+	/*
+	 * GX is fed by CX and its level comes from the ARC voter: the vendor's
+	 * live device tree names vdd_gx-supply on the gxclkctl node and
+	 * parent-supply on this GDSC, so the domain cannot come up without the
+	 * rail.  gdsc_gx_do_nothing_enable() enables the supply, but it has to
+	 * be resolved first.
+	 */
+	.supply = "vdd_gx",
 };
 
 static struct clk_regmap *gpu_cc_tuna_clocks[] = {

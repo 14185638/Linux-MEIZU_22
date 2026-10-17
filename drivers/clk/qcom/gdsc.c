@@ -142,6 +142,21 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 {
 	int ret;
 
+	/*
+	 * The CX domain is sequenced by the RSC, and the only thing the CPU can
+	 * give it is a change in the cx.lvl vote: the ARC regulator's send path
+	 * skips the RPMh write when the aggregated level has not moved, so an
+	 * already-enabled rail leaves the RSC nothing to react to.  Drop the
+	 * vote and raise it again.  This is for the CX domain only -- dropping
+	 * the rail underneath a live GX/CX complex hangs the board.
+	 */
+	if (status == GDSC_ON && sc->rsupply && sc->pd.name &&
+	    !strcmp(sc->pd.name, "gpu_cc_cx_gdsc") &&
+	    regulator_is_enabled(sc->rsupply)) {
+		regulator_disable(sc->rsupply);
+		udelay(500);
+	}
+
 	if (status == GDSC_ON && sc->rsupply) {
 		ret = regulator_enable(sc->rsupply);
 		if (ret < 0)
@@ -164,7 +179,16 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 		 * unknown state
 		 */
 		udelay(TIMEOUT_US);
-		return 0;
+
+		/*
+		 * Do not return here: the regulator and interconnect votes
+		 * below have to be given back as well, or a votable GDSC that
+		 * names a supply keeps its rail up for as long as the clock
+		 * controller lives.  gpu_cc_cx_gdsc is VOTABLE and its supply
+		 * is cx.lvl, so a collapsed CX domain would leave the CX level
+		 * where the last power-up put it.
+		 */
+		goto out;
 	}
 
 	if (sc->gds_hw_ctrl) {
@@ -193,19 +217,73 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 		ret = 0;
 	} else {
 		ret = gdsc_poll_status(sc, status);
+
+		/*
+		 * Vendor parity: on a hardware triggered GDSC whose status comes
+		 * from a gds_hw_ctrl block, one timeout is not enough.  The
+		 * GPU's CX domain is the case in point -- the RSC/PDC has to act
+		 * on the request before 0x9094 reports it, which can take longer
+		 * than STATUS_POLL_TIMEOUT_US -- so re-poll once.
+		 */
+		if (ret && sc->gds_hw_ctrl) {
+			pr_warn("%s enable timed out, Re-polling\n", sc->pd.name);
+			ret = gdsc_poll_status(sc, status);
+		}
 	}
+
+	/*
+	 * A CX power-up is asynchronous with respect to the RPMh
+	 * acknowledgment: the vendor waits up to 1250 ms on a completion for
+	 * this domain before it lets the next step start.  Keep asking for the
+	 * same budget before believing the status poll.
+	 */
+	if (ret && sc->gds_hw_ctrl && sc->pd.name &&
+	    !strcmp(sc->pd.name, "gpu_cc_cx_gdsc")) {
+		ktime_t t0 = ktime_get();
+		s64 budget = (status == GDSC_OFF) ? 1250000 : 1000000;
+		int ok;
+
+		do {
+			ok = gdsc_check_status(sc, status);
+			if (ok)
+				break;
+			usleep_range(1000, 2000);
+		} while (ktime_us_delta(ktime_get(), t0) < budget);
+
+		if (ok)
+			ret = 0;
+	}
+
+	/*
+	 * The vendor's own wake path never waits for this domain's status: it
+	 * enables the CX rail and goes straight on to the GMU clocks and the
+	 * firmware.  Do the same here, or the last phase of the power-up never
+	 * arrives while this function keeps gating on the status bit.
+	 */
+	if (ret && status == GDSC_ON && sc->pd.name &&
+	    !strcmp(sc->pd.name, "gpu_cc_cx_gdsc"))
+		ret = 0;
+
 	WARN(ret, "%s status stuck at 'o%s'", sc->pd.name, status ? "ff" : "n");
 
+out:
 	if (!ret && status == GDSC_OFF) {
 		ret = icc_set_bw(sc->icc_path, 0, 0);
 		if (ret)
 			return ret;
 	}
 
-	if (!ret && status == GDSC_OFF && sc->rsupply) {
-		ret = regulator_disable(sc->rsupply);
-		if (ret < 0)
-			return ret;
+	/*
+	 * Release the rail even when the status poll failed: a CX collapse
+	 * takes longer than one STATUS_POLL_TIMEOUT_US (the vendor waits up to
+	 * 1250 ms on a completion for this same domain), so the release must
+	 * not be gated on the poll -- a vote left up keeps CX at the level the
+	 * last power-up set.
+	 */
+	if (status == GDSC_OFF && sc->rsupply) {
+		int dret = regulator_disable(sc->rsupply);
+
+		ret = ret ? ret : dret;
 	}
 
 	return ret;
@@ -720,3 +798,26 @@ int gdsc_gx_do_nothing_enable(struct generic_pm_domain *domain)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(gdsc_gx_do_nothing_enable);
+
+/*
+ * Vendor/upstream parity: the GX GDSC's disable sequence belongs to the GMU
+ * firmware, so only the recovery path may force it off, where the GMU driver
+ * sets domain->synced_poweroff.  Otherwise genpd touches the domain on paths
+ * the OS does not own -- system resume powers every domain up in
+ * resume_noirq() and down again in complete() with no OS vote left, disabling
+ * GX while the firmware is still using it.
+ */
+int gdsc_gx_disable(struct generic_pm_domain *domain)
+{
+	struct gdsc *sc = domain_to_gdsc(domain);
+
+	if (domain->synced_poweroff)
+		return gdsc_disable(domain);
+
+	/* Remove parent-supply placed in enable */
+	if (sc->rsupply)
+		return regulator_disable(sc->rsupply);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gdsc_gx_disable);
