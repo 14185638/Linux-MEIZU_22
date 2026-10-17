@@ -34,9 +34,34 @@
 		 */
 		vreg_ldob5: ldo5  { regulator-name = "ldob5";  regulator-min-microvolt = <1200000>; regulator-max-microvolt = <1200000>; regulator-always-on; };
 		vreg_ldob7: ldo7  { regulator-name = "ldob7";  regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
-		vreg_ldob8: ldo8  { regulator-name = "ldob8";  regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
+		vreg_ldob8: ldo8  { regulator-name = "ldob8";  regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; };
+		vreg_ldob11: ldo11 { regulator-name = "ldob11"; regulator-min-microvolt = <1800000>; regulator-max-microvolt = <1800000>; regulator-always-on; };
 		vreg_ldob12: ldo12 { regulator-name = "ldob12"; regulator-min-microvolt = <2504000>; regulator-max-microvolt = <3300000>; regulator-always-on; };
 		vreg_ldob17: ldo17 { regulator-name = "ldob17"; regulator-min-microvolt = <2700000>; regulator-max-microvolt = <3544000>; regulator-always-on; };
-		vreg_ldob19: ldo19 { regulator-name = "ldob19"; regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3544000>; regulator-always-on; };
+		vreg_ldob19: ldo19 { regulator-name = "ldob19"; regulator-min-microvolt = <3000000>; regulator-max-microvolt = <3544000>; };
+
+		/*
+		 * The touchscreen's analogue supply.  From the factory device
+		 * tree, which names it L22B in the touch node and
+		 * regulator-name = "pmxr2230_l22" here, min 0x2932e0 (2700000)
+		 * and max 0x33e140 (3400000).  Not always-on: the driver enables
+		 * and disables it with the panel.
+		 */
+		vreg_ldob22: ldo22 { regulator-name = "ldob22"; regulator-min-microvolt = <2700000>; regulator-max-microvolt = <3400000>; };
+	};
+
+	/*
+	 * PM8550VS, instance d -- the factory tree's pm_v6d -- with only the
+	 * touchscreen's digital supply modelled.  Its other rails are the level
+	 * resources (S1D is MX, S3D is EBI, S4D is MODEM), reached as RPMh
+	 * power domains through rpmhpd, not as regulators.  The values are the
+	 * vendor's (tuna-regulators.dtsi): 1.71 V to 1.95 V, initialising at
+	 * 1.8 V, which is the ST FTS vdd range.
+	 */
+	regulators-1 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+		qcom,pmic-id = "d";
+
+		vreg_ldod1: ldo1 { regulator-name = "ldod1"; regulator-min-microvolt = <1710000>; regulator-max-microvolt = <1950000>; };
 	};
 };

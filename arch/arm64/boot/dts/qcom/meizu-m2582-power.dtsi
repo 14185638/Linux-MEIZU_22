@@ -18,8 +18,6 @@
 			regulator-name = "ldod3";
 			regulator-min-microvolt = <1208000>;
 			regulator-max-microvolt = <1208000>;
-			regulator-always-on;
-			regulator-boot-on;
 		};
 		vreg_ldof1: regulator-ldof1 {
 			qcom,resource-name = "ldof1";
@@ -36,6 +34,77 @@
 			regulator-max-microvolt = <1200000>;
 			regulator-always-on;
 			regulator-boot-on;
+		};
+	};
+
+	/*
+	 * cx.lvl, the ARC resource behind the CX rail: the GPU's CX GDSC
+	 * (gpu_cc_cx_gdsc, gpucc-tuna.c) names this as its supply; the factory
+	 * DT and OnePlus' tuna tree agree.  Command DB table:
+	 *     0    16   64   128  192  256  320  384  416  432
+	 *     off  ret  lsvs svs  svs1 nom  nom1 tbo  tbo1 tbo2
+	 * level 0 is a real "no vote" entry; gcc holds RPMHPD_CX at NOM (256).
+	 */
+	/*
+	 * gfx.lvl, the ARC resource behind the GX rail.  The factory tree's
+	 * gxclkctl@3d68024: "power-domains = <&gpucc GPU_CC_CX_GDSC>" and
+	 * "vdd_gx-supply = <&VDD_GFX_MXC_VOTER_LEVEL>" -- the supply that
+	 * gdsc_gx_do_nothing_enable() enables.  Without it GMU_PWR_CLK_STATUS
+	 * reads 3 and the GMU clock HAL gives up (HAL_clk_ValidateRegTimeout).
+	 * No required-opps: rpmhpd's sync_state() pins every RSC rail high.
+	 */
+	rpmh-regulator-gfxlvl {
+		compatible = "qcom,rpmh-arc-regulator";
+		qcom,resource-name = "gfx.lvl";
+
+		vreg_gx_level: regulator-gx-level {
+			regulator-name = "gfx_level";
+			regulator-min-microvolt = <RPMH_REGULATOR_LEVEL_RETENTION>;
+			regulator-max-microvolt = <RPMH_REGULATOR_LEVEL_TURBO>;
+			/*
+			 * The factory's init level for this resource is
+			 * RETENTION (0x10) and its gfx voter level sits one
+			 * entry above it (0x30); RETENTION is what this rail is
+			 * asked for while the GX domain is up.
+			 */
+			qcom,init-voltage-level = <RPMH_REGULATOR_LEVEL_RETENTION>;
+		};
+	};
+
+	/*
+	 * The GX rail vote, on the factory's gxclkctl resource (live DT:
+	 * vdd_gx-supply = <0x7c>, VDD_GFX_MXC_VOTER_LEVEL, the voter child of
+	 * rpmh-regulator-mxclvl: min = init = 0x30 = MIN_SVS, max = 0xffff).
+	 * Only the voter is declared: the APPS RSC must not vote GX/GMxC/MxC --
+	 * an AP always-on vote 384 on mxc.lvl from late_initcall failed the
+	 * GPU's first hw init ("adreno_load_gpu: gpu hw init failed: -110").
+	 */
+	rpmh-regulator-mxclvl {
+		compatible = "qcom,rpmh-arc-regulator";
+		qcom,resource-name = "mxc.lvl";
+
+		vreg_gx_voter_level: regulator-gx-voter-level {
+			regulator-name = "mxc_gfx_voter_level";
+			regulator-min-microvolt = <RPMH_REGULATOR_LEVEL_MIN_SVS>;
+			regulator-max-microvolt = <RPMH_REGULATOR_LEVEL_TURBO>;
+			qcom,init-voltage-level = <RPMH_REGULATOR_LEVEL_MIN_SVS>;
+		};
+	};
+
+	rpmh-regulator-cxlvl {
+		compatible = "qcom,rpmh-arc-regulator";
+		qcom,resource-name = "cx.lvl";
+
+		vreg_cx_level: regulator-cx-level {
+			regulator-name = "cx_level";
+			regulator-min-microvolt = <RPMH_REGULATOR_LEVEL_RETENTION>;
+			regulator-max-microvolt = <RPMH_REGULATOR_LEVEL_TURBO>;
+			/*
+			 * The vendor's own init level for this resource is
+			 * TURBO, and TURBO is what the GPU's OPP tables are
+			 * built against.
+			 */
+			qcom,init-voltage-level = <RPMH_REGULATOR_LEVEL_TURBO>;
 		};
 	};
 };
