@@ -397,7 +397,7 @@ const struct dpu_mdss_cfg dpu_tuna_cfg = {
 	.cwb = tuna_cwb,
 	.intf_count = ARRAY_SIZE(tuna_intf),
 	.intf = tuna_intf,
-	.vbif = &sm8650_vbif,
+	.vbif = &tuna_vbif,
 	.perf = &tuna_perf_data,
 };
 

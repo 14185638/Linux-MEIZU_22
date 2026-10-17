@@ -508,6 +508,14 @@ static const u32 sdm845_rt_pri_lvl[] = {3, 3, 4, 4, 5, 5, 6, 6};
 static const u32 sdm845_nrt_pri_lvl[] = {3, 3, 3, 3, 3, 3, 3, 3};
 static const u32 sm8650_rt_pri_lvl[] = {4, 4, 5, 5, 5, 5, 5, 6};
 
+/*
+ * M2582: the factory's running DT carries
+ * qcom,sde-vbif-qos-rt-remap = <4 4 5 5 5 5 6 6>, i.e. QoS level 6 maps to
+ * hardware priority 6 where sm8650_rt_pri_lvl leaves it at 5.  Programmed per
+ * (XIN, level) into VBIF_XINL_QOS_RP_REMAP_000 and the matching LVL register.
+ */
+static const u32 tuna_rt_pri_lvl[] = {4, 4, 5, 5, 5, 5, 6, 6};
+
 static const struct dpu_vbif_dynamic_ot_cfg msm8998_ot_rdwr_cfg[] = {
 	{
 		.pps = 1920 * 1080 * 30,
@@ -634,6 +642,33 @@ static const struct dpu_vbif_cfg sm8650_vbif = {
 	.qos_rt_tbl = {
 		.npriority_lvl = ARRAY_SIZE(sm8650_rt_pri_lvl),
 		.priority_lvl = sm8650_rt_pri_lvl,
+		},
+	.qos_nrt_tbl = {
+		.npriority_lvl = ARRAY_SIZE(sdm845_nrt_pri_lvl),
+		.priority_lvl = sdm845_nrt_pri_lvl,
+		},
+	.memtype_count = 16,
+	.memtype = {3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3},
+};
+
+/*
+ * M2582: the factory's DT carries qcom,sde-vbif-default-ot-rd-limit = <0x28>
+ * and -wr-limit = <0x20> for this block; the shared sm8650_vbif entry has no
+ * such fields, so _dpu_vbif_get_ot_limit() leaves the bootloader's value in
+ * place instead of programming the per-XIN limits.  tuna gets its own entry so
+ * the other SoCs sharing sm8650_vbif keep their behaviour; the values are the
+ * factory's.
+ */
+static const struct dpu_vbif_cfg tuna_vbif = {
+	.len = 0x1074,
+	.features = BIT(DPU_VBIF_QOS_REMAP),
+	.default_ot_rd_limit = 0x28,
+	.default_ot_wr_limit = 0x20,
+	.xin_halt_timeout = 0x4000,
+	.qos_rp_remap_size = 0x40,
+	.qos_rt_tbl = {
+		.npriority_lvl = ARRAY_SIZE(tuna_rt_pri_lvl),
+		.priority_lvl = tuna_rt_pri_lvl,
 		},
 	.qos_nrt_tbl = {
 		.npriority_lvl = ARRAY_SIZE(sdm845_nrt_pri_lvl),
