@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/qcom,rpmh-arc-regulator.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm RPMh ARC (Aggregated Resource Controller) Level Regulators
+
+maintainers:
+  - Bjorn Andersson <andersson@kernel.org>
+
+description: |
+  The ARC accelerators reachable through RPMh carry the operating level of a
+  rail rather than its voltage.  A resource such as cx.lvl or gfx.lvl is voted
+  with a level index into a table the firmware publishes in the command DB aux
+  data, and that level is fed to CPR, which decides the explicit voltage.  The
+  hardware has no separate enable bit: level 0 is the "no vote" entry on every
+  resource whose table starts there, so a consumer that stops voting lowers the
+  rail by voting zero, or by dropping out of the aggregate where zero is not a
+  valid level.
+
+  These resources must be described in two levels of device nodes.  The first
+  level describes the resource and must reside within an RPMh device node.  The
+  second level describes one regulator framework interface for that resource;
+  several consumers may vote on the same resource and the driver aggregates
+  them by taking the highest enabled level.
+
+  Note that unlike the PMIC regulators described by qcom,rpmh-regulator.yaml,
+  which are named by PMIC and resource suffix, an ARC resource is named
+  directly by its RPMh resource name.
+
+properties:
+  compatible:
+    const: qcom,rpmh-arc-regulator
+
+  qcom,resource-name:
+    description: |
+      RPMh resource name of this ARC resource, e.g. "cx.lvl".  Must match the
+      name the bootloader published in the command DB.
+    $ref: /schemas/types.yaml#/definitions/string
+
+  qcom,always-wait-for-ack:
+    description: |
+      Boolean flag which indicates that the application processor must wait
+      for an ACK or a NACK from RPMh for every request sent for this resource,
+      including those which are for a strictly lower level.  Without it only
+      requests that raise the level are synchronous.
+    $ref: /schemas/types.yaml#/definitions/flag
+
+additionalProperties: false
+
+required:
+  - compatible
+  - qcom,resource-name
+
+patternProperties:
+  "^regulator.*$":
+    type: object
+    $ref: regulator.yaml#
+    description: One consumer voting on this resource.
+    unevaluatedProperties: false
+
+    properties:
+      qcom,init-voltage-level:
+        description: |
+          The level this consumer votes when it is enabled, as an
+          RPMH_REGULATOR_LEVEL_* value from
+          dt-bindings/power/qcom,rpmhpd.h.  The nearest level at or above the
+          requested one is selected.  Defaults to the highest level the
+          resource supports.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+      qcom,min-dropout-voltage-level:
+        description: |
+          Minimum level difference the parent supply must keep above this
+          regulator's own level.  Only meaningful together with a parent supply
+          property named after this node's regulator-name.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+    required:
+      - regulator-name
+
+examples:
+  - |
+    #include <dt-bindings/power/qcom,rpmhpd.h>
+
+    rpmh-regulator-cxlvl {
+        compatible = "qcom,rpmh-arc-regulator";
+        qcom,resource-name = "cx.lvl";
+
+        regulator-cx-level {
+            regulator-name = "cx_level";
+            regulator-min-microvolt = <RPMH_REGULATOR_LEVEL_RETENTION>;
+            regulator-max-microvolt = <RPMH_REGULATOR_LEVEL_TURBO>;
+            qcom,init-voltage-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+        };
+    };
+...

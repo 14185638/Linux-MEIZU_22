@@ -1176,6 +1176,21 @@ config REGULATOR_QCOM_RPMH
 	  control allows for voting on regulator state between multiple
 	  processors within the SoC.
 
+config REGULATOR_QCOM_RPMH_ARC
+	tristate "Qualcomm RPMh ARC level regulator driver"
+	depends on QCOM_RPMH || (QCOM_RPMH=n && COMPILE_TEST)
+	depends on QCOM_COMMAND_DB || (QCOM_COMMAND_DB=n && COMPILE_TEST)
+	help
+	  This driver supports the ARC (Aggregated Resource Controller)
+	  resources exposed through RPMh, such as cx.lvl and gfx.lvl.  Unlike
+	  the PMIC regulators that the RPMh VRM accelerator handles, a vote on
+	  an ARC resource is a performance level index that is fed to CPR
+	  rather than a voltage, and the level doubles as the enable state.
+
+	  This is what lets a GDSC name one of these as its own supply, so
+	  that the rail a power domain sits on follows the domain down and
+	  back up instead of being held at one corner by another consumer.
+
 config REGULATOR_QCOM_TUNA_BOOT
 	tristate "TUNA boot-time RPMh LDO votes (EXPERIMENTAL)"
 	depends on OF && QCOM_RPMH && QCOM_COMMAND_DB
