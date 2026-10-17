@@ -54,9 +54,10 @@
 /* Hardware is V7.2 */
 #define DSI_PHY_7NM_QUIRK_V7_2		BIT(5)
 /*
- * The DSI byte clock is OUT_DIV / 4 instead of BIT_DIV / 8, and the bit clock
- * is OUT_DIV itself rather than a divided output of it. Deriving the byte clock
- * the usual way runs the link at half the rate the PHY is programmed for.
+ * The byte clock is VCO / out_div / bit_clk_div / 8, the chain the factory's
+ * own PLL revisions (dsi_pll_{3,4,5}nm.c) implement and the one this quirk
+ * models.  The byte clock is tapped before the DSICLK_SEL mux, so OUTDIV_RATE
+ * and DSICLK_SEL have to be programmed together (see below).
  */
 #define DSI_PHY_7NM_QUIRK_BYTE_DIV_4	BIT(6)
 
@@ -66,15 +67,26 @@
  * and 3, giving pclk = pclk_mux / pix_clk_div.
  */
 #define DSI_PHY_7NM_BYTE_DIV_4_BIT_CLK_DIV	1
+/*
+ * DIV_CTRL_7_4, the pixel clock divider off pll_bit.  The factory's running
+ * stack keeps this field at 3 together with CLK_CFG1.DSICLK_SEL = 1 (its PHY
+ * reads back CLK_CFG0 = 0x31, CLK_CFG1 = 0x21) and its DSI reports
+ * PIXEL_CLK = 183.5 MHz against BYTE_CLK = 137.625 MHz.  At 1 the interface
+ * moves a 1214-byte line in 4.43 us instead of 2.21 us and a frame does not
+ * fit in one panel refresh, so the field must stay at 3.
+ */
 #define DSI_PHY_7NM_BYTE_DIV_4_PIX_CLK_DIV	3
 
 /*
- * out_div is a fixed VCO / 2 on that PHY, which both the byte clock
- * (out_div / 4) and the pixel clock (out_div / 3) are dimensioned for.
- * PLL_OUTDIV_RATE is a power-of-two field, hence ilog2(2) = 1.
+ * OUTDIV_RATE must be 0 (no /2 before the taps), exactly as the factory's own
+ * stack programs it.  The /2 the pixel clock needs lives in DSICLK_SEL (1 =
+ * the pll_bit/2 tap, see the vendor's dsi_pll_5nm.c
+ * dsi_pll_5nm_set_pclk_div(): pclk = vco/phy_post_div/2/pclk_div).  Putting it
+ * here instead halves the *byte* clock as well, because the byte clock is
+ * tapped before the DSICLK_SEL mux, and that runs the link at 68.8125 MHz.
  */
-#define DSI_PHY_7NM_BYTE_DIV_4_OUT_DIV		2
-#define DSI_PHY_7NM_BYTE_DIV_4_OUT_DIV_REG	1
+#define DSI_PHY_7NM_BYTE_DIV_4_OUT_DIV		1
+#define DSI_PHY_7NM_BYTE_DIV_4_OUT_DIV_REG	0
 
 struct dsi_pll_config {
 	bool enable_ssc;
@@ -551,12 +563,11 @@ static int dsi_pll_7nm_vco_prepare(struct clk_hw *hw)
 		dsi_pll_enable_global_clk(pll_7nm->slave);
 
 	/*
-	 * M2582: the retime FIFO has to be toggled once the global clock is
-	 * enabled, and CLK_EN_SEL (CLK_CFG1 bit 4) cleared when that handshake
-	 * has completed. CLK_EN_SEL is a transitional bit, not a setting: while
-	 * it is set the PHY takes its digital clock enable from the retime
-	 * buffer handshake instead of the CLK_EN bit, so it must not be left
-	 * asserted.
+	 * The retime FIFO has to be toggled once the global clock is enabled,
+	 * and CLK_EN_SEL (CLK_CFG1 bit 4) cleared when that handshake has
+	 * completed.  CLK_EN_SEL is a transitional bit, not a setting: while it
+	 * is set the PHY takes its digital clock enable from the retime buffer
+	 * handshake instead of the CLK_EN bit, so it must not be left asserted.
 	 */
 	writel(0x00, pll_7nm->phy->base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
 	if (pll_7nm->slave)
@@ -573,6 +584,18 @@ static int dsi_pll_7nm_vco_prepare(struct clk_hw *hw)
 	if (pll_7nm->slave)
 		dsi_pll_cmn_clk_cfg1_update(pll_7nm->slave,
 					    DSI_7nm_PHY_CMN_CLK_CFG1_CLK_EN_SEL, 0);
+
+	/*
+	 * DSICLK_SEL = 1 (the pll_bit/2 tap), exactly as the vendor's own PLL
+	 * code hardcodes for DPHY.  With OUTDIV_RATE = 0 that gives
+	 * pclk = VCO/2/3 = 183.5 MHz and a byte clock of VCO/8 = 137.625 MHz.
+	 * The bit must not be set while OUTDIV_RATE is still /2: that puts
+	 * pclk at 91.75 MHz and wedges the board.
+	 */
+	if (pll_7nm->phy->cfg->quirks & DSI_PHY_7NM_QUIRK_BYTE_DIV_4)
+		dsi_pll_cmn_clk_cfg1_update(pll_7nm,
+					    DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL__MASK,
+					    DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL(1));
 
 error:
 	return rc;
@@ -702,6 +725,12 @@ static int dsi_7nm_pll_restore_state(struct msm_dsi_phy *phy)
 	u32 val, clk_cfg0;
 	int ret;
 
+	/*
+	 * Clamp the VCO post-divider to the fixed plan instead of restoring
+	 * whatever was cached: a stale /2 left by the bootloader would halve
+	 * the byte clock again.
+	 */
+	cached->pll_out_div = DSI_PHY_7NM_BYTE_DIV_4_OUT_DIV_REG;
 	val = readl(pll_7nm->phy->pll_base + REG_DSI_7nm_PHY_PLL_PLL_OUTDIV_RATE);
 	val &= ~0x3;
 	val |= cached->pll_out_div;
@@ -799,10 +828,10 @@ static int pll_7nm_register(struct dsi_pll_7nm *pll_7nm, struct clk_hw **provide
 	snprintf(clk_name, sizeof(clk_name), "dsi%d_pll_out_div_clk", pll_7nm->phy->id);
 
 	/*
-	 * M2582: out_div is a fixed VCO/2 on this board (VCO 1101 MHz ->
-	 * 550.5 MHz), which is what the byte clock (out_div / 4 = 137.625 MHz)
-	 * and the pixel clock (out_div / 3 = 183.5 MHz) are dimensioned for.
-	 * dsi_7nm_phy_enable() pins PLL_OUTDIV_RATE to match.
+	 * out_div is a fixed VCO/1 here (VCO 1101 MHz), which the byte clock
+	 * (out_div / 8 = 137.625 MHz) and the pixel clock (VCO / 6 = 183.5 MHz,
+	 * off the /2 tap) are dimensioned for.  dsi_7nm_phy_enable() pins
+	 * PLL_OUTDIV_RATE to match.
 	 */
 	if (pll_7nm->phy->cfg->quirks & DSI_PHY_7NM_QUIRK_BYTE_DIV_4)
 		pll_out_div = devm_clk_hw_register_fixed_factor_parent_hw(dev,
@@ -824,11 +853,10 @@ static int pll_7nm_register(struct dsi_pll_7nm *pll_7nm, struct clk_hw **provide
 	/*
 	 * BIT CLK: DIV_CTRL_3_0.
 	 *
-	 * M2582: on the PHY behind DSI_PHY_7NM_QUIRK_BYTE_DIV_4 the bit clock is
-	 * out_div itself, and CLK_CFG0[3:0] must stay at 1, so it is registered
-	 * as a fixed factor to keep the field out of the clock framework's
-	 * hands. Other PHYs keep the divider: there the byte clock is derived
-	 * from this clock (out_div / BIT_DIV / 8).
+	 * On the PHY behind DSI_PHY_7NM_QUIRK_BYTE_DIV_4 the bit clock is out_div
+	 * itself and CLK_CFG0[3:0] must stay at 1, so it is registered as a fixed
+	 * factor and kept out of the clock framework's hands.  Other PHYs keep
+	 * the divider: there the byte clock derives from it (out_div / BIT_DIV / 8).
 	 */
 	if (pll_7nm->phy->cfg->quirks & DSI_PHY_7NM_QUIRK_BYTE_DIV_4)
 		pll_bit = devm_clk_hw_register_fixed_factor_parent_hw(dev,
@@ -849,16 +877,15 @@ static int pll_7nm_register(struct dsi_pll_7nm *pll_7nm, struct clk_hw **provide
 	/*
 	 * DSI Byte clock = VCO_CLK / OUT_DIV / BIT_DIV / N
 	 *
-	 * N is 7 in CPHY and 8 on the revisions this driver was written for.
-	 * M2582: the affected PHY takes it from out_div / 4, with pll_out_div
-	 * as parent -- pll_bit is registered without CLK_SET_RATE_PARENT, so
-	 * hanging the byte clock off it would break the rate chain up to the
-	 * VCO.
+	 * N is 7 in CPHY and 8 on the revisions this driver was written for,
+	 * but the affected PHY takes out_div / 8: with OUTDIV_RATE = 0 and
+	 * DSICLK_SEL = 1 the /2 is not in the byte-clock path.  pll_bit has no
+	 * CLK_SET_RATE_PARENT, so the byte clock cannot hang off it.
 	 */
 	if (!pll_7nm->phy->cphy_mode &&
 	    (pll_7nm->phy->cfg->quirks & DSI_PHY_7NM_QUIRK_BYTE_DIV_4))
 		hw = devm_clk_hw_register_fixed_factor_parent_hw(dev, clk_name,
-				pll_out_div, CLK_SET_RATE_PARENT, 1, 4);
+				pll_out_div, CLK_SET_RATE_PARENT, 1, 8);
 	else
 		hw = devm_clk_hw_register_fixed_factor_parent_hw(dev, clk_name,
 				pll_bit, CLK_SET_RATE_PARENT, 1,
@@ -900,7 +927,24 @@ static int pll_7nm_register(struct dsi_pll_7nm *pll_7nm, struct clk_hw **provide
 					    DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL__MASK,
 					    DSI_7nm_PHY_CMN_CLK_CFG1_DSICLK_SEL(3));
 		phy_pll_out_dsi_parent = pll_post_out_div;
+	} else if (pll_7nm->phy->cfg->quirks & DSI_PHY_7NM_QUIRK_BYTE_DIV_4) {
+		/*
+		 * On this PHY the pixel clock is (VCO/2)/3 = VCO/6 = 183.5 MHz
+		 * and the byte clock is VCO/8 = 137.625 MHz -- the divider plan
+		 * the factory's own stack runs.  The pclk comes straight off the
+		 * /2 tap (which DSICLK_SEL = 1 also selects) rather than through
+		 * the mux: the framework would keep the mux on pll_bit (VCO/1),
+		 * ask the VCO to compensate and land pclk on 367 MHz.
+		 */
+		phy_pll_out_dsi_parent = pll_by_2_bit;
 	} else {
+		/*
+		 * DSICLK_SEL (CLK_CFG1 bits[1:0]) must stay 0 here.  The
+		 * vendor's 4nm PLL (dsi_pll_4nm.c) puts the "divide by two" on
+		 * DSICLK_SEL == 1, but the bit only means that together with
+		 * the rest of the PLL/divider plan; do not copy it across PHY
+		 * revisions.
+		 */
 		snprintf(clk_name, sizeof(clk_name), "dsi%d_pclk_mux", pll_7nm->phy->id);
 
 		hw = devm_clk_hw_register_mux_parent_hws(dev, clk_name,
@@ -923,10 +967,10 @@ static int pll_7nm_register(struct dsi_pll_7nm *pll_7nm, struct clk_hw **provide
 	/*
 	 * PIX CLK DIV : DIV_CTRL_7_4.
 	 *
-	 * M2582: with DSI_PHY_7NM_QUIRK_BYTE_DIV_4 the pixel clock is a fixed /3
-	 * of the pclk mux (550.5 MHz pll_bit -> 183.5 MHz pclk), not a divider
-	 * the clock framework may steer. CLK_SET_RATE_PARENT is still required
-	 * so the request reaches the VCO through pll_bit and pll_out_div.
+	 * With DSI_PHY_7NM_QUIRK_BYTE_DIV_4 the pixel clock is a fixed /3 of
+	 * the pclk mux (550.5 MHz pll_bit -> 183.5 MHz pclk), not a divider the
+	 * clock framework may steer.  CLK_SET_RATE_PARENT is still required so
+	 * the request reaches the VCO through pll_bit and pll_out_div.
 	 */
 	hw = devm_clk_hw_register_fixed_factor_parent_hw(dev, clk_name,
 			phy_pll_out_dsi_parent, CLK_SET_RATE_PARENT, 1,
@@ -974,10 +1018,10 @@ static int dsi_pll_7nm_init(struct msm_dsi_phy *phy)
 	phy->vco_hw = &pll_7nm->clk_hw;
 
 	/*
-	 * M2582: do not snapshot the PLL state at probe. It is taken before the
-	 * clock framework has run and holds whatever the bootloader left, so
-	 * restoring it would overwrite the dividers the framework programs.
-	 * Later disable/enable cycles still save and restore Linux's own values.
+	 * Do not snapshot the PLL state at probe: it is taken before the clock
+	 * framework has run and holds whatever the bootloader left, so restoring
+	 * it would overwrite the dividers the framework programs.  Later
+	 * disable/enable cycles still save and restore Linux's own values.
 	 */
 	/*
 	 * Store also proper vco_current_rate, because its value will be used in
@@ -1077,12 +1121,12 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 	}
 
 	/*
-	 * M2582: zero t_clk_pre and t_clk_post. This panel declares no
+	 * Zero t_clk_pre and t_clk_post.  This panel declares no
 	 * qcom,mdss-dsi-t-clk-pre/post, so the factory leaves them at zero and
 	 * programs REG_DSI_CLKOUT_TIMING_CTRL (0x0c0) as 0, while the values
-	 * computed here from the link rate make the D-PHY report illegal
-	 * low-power transitions on every lane. Zeroing also clears
-	 * clk_pre_inc_by_2, which gates the REG_DSI_T_CLK_PRE_EXTEND write.
+	 * computed from the link rate make the D-PHY report illegal low-power
+	 * transitions on every lane.  Zeroing also clears clk_pre_inc_by_2,
+	 * which gates the REG_DSI_T_CLK_PRE_EXTEND write.
 	 */
 	if (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_BYTE_DIV_4) {
 		timing->shared_timings.clk_pre = 0;
@@ -1201,6 +1245,23 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 	/* Assert PLL core reset */
 	writel(0x00, base + REG_DSI_7nm_PHY_CMN_PLL_CNTRL);
 
+	/*
+	 * Pulse the PLL/digital reset in CMN_CTRL_1 (PHY_CMN_CTRL_1) bit 7, after
+	 * PLL_CNTRL is taken to 0 and before the PLL registers are written: the
+	 * factory does it on every PLL configure (dsi_pll_4nm.c,
+	 * dsi_pll_4nm_trigger_resets_pre_enable()) to "clear out any jitter
+	 * introduced as result of 0p9 collapse".  Upstream's 14nm driver
+	 * pulses the same register (dsi_phy_14nm.c); this family lost it.
+	 */
+	data = readl(base + REG_DSI_7nm_PHY_CMN_CTRL_1);
+	writel(data | BIT(7), base + REG_DSI_7nm_PHY_CMN_CTRL_1);
+	/* the pulse has to be visible before it is timed */
+	wmb();
+	udelay(100);
+	writel(data & ~BIT(7), base + REG_DSI_7nm_PHY_CMN_CTRL_1);
+	/* and cleared before the PLL registers are written */
+	wmb();
+
 	/* turn off resync FIFO */
 	writel(0x00, base + REG_DSI_7nm_PHY_CMN_RBUF_CTRL);
 
@@ -1253,9 +1314,9 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 	}
 
 	/*
-	 * M2582: the PHY reset above has cleared CLK_CFG0 and the clock
-	 * framework will not rewrite it (its cached rate already matches), so
-	 * pin both divider fields here, after set_usecase().
+	 * The PHY reset above has cleared CLK_CFG0 and the clock framework will
+	 * not rewrite it (its cached rate already matches), so pin both divider
+	 * fields here, after set_usecase().
 	 */
 	{
 		u32 c0 = readl(base + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
@@ -1268,9 +1329,9 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 		wmb();
 
 		/*
-		 * Pin PLL_OUTDIV_RATE as well: out_div = VCO / 2, which both the
-		 * byte clock (out_div / 4) and the pixel clock (out_div / 3) are
-		 * dimensioned for.
+		 * Pin PLL_OUTDIV_RATE as well: out_div = VCO / 1 here, which
+		 * both the byte clock (VCO / 8) and the pixel clock (VCO / 6)
+		 * are dimensioned for.
 		 */
 		{
 			u32 v = readl(phy->pll_base +
@@ -1657,8 +1718,8 @@ const struct msm_dsi_phy_cfg dsi_phy_4nm_8550_cfgs = {
 };
 
 /*
- * M2582 / tuna: the 4nm 8650 PHY with the byte clock sourced correctly
- * (DSI_PHY_7NM_QUIRK_BYTE_DIV_4). Kept separate from dsi_phy_4nm_8650_cfgs so
+ * The 4nm 8650 PHY with the byte clock sourced correctly
+ * (DSI_PHY_7NM_QUIRK_BYTE_DIV_4).  Kept separate from dsi_phy_4nm_8650_cfgs so
  * that sm8650, which shares that one, keeps its existing behaviour.
  */
 const struct msm_dsi_phy_cfg dsi_phy_4nm_tuna_cfgs = {
