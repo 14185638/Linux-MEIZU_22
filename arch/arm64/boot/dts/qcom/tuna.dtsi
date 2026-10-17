@@ -153,37 +153,10 @@
 		};
 
 		/*
-		 * The GPU clock controller and the GX clock/power block. Both were
-		 * missing from this file while gpucc-tuna.c sat in the tree
-		 * unbuilt, which is why the GPU had no way to be clocked no matter
-		 * what the board file declared.
-		 *
-		 * Addresses, window sizes and the clock inputs come from the
-		 * board's factory device tree, which names the same blocks
-		 * "qcom,tuna-gpucc" and "qcom,tuna-gx_clkctl". The window is
-		 * 0x9800 because gpucc-tuna.c's regmap has max_register 0x964c;
-		 * a smaller window would truncate it.
-		 *
-		 * The two GPLL0 inputs are the ones gcc-tuna.c registers. The
-		 * driver used to ask for "gpll0_out_main"/"gpll0_out_main_div",
-		 * which nothing on this platform provides -- see the note in
-		 * gpucc-tuna.c.
-		 */
-		/*
-		 * IPCC and the AOSS QMP that rides on it.
-		 *
-		 * The GPU needs these. a6xx_gmu_acd_probe() sends the GPU's ACD state to
-		 * AOSS with qmp_send(), and refuses to continue when the GPU has ACD
-		 * levels but qcom,qmp is absent ("Unable to send ACD state to AOSS",
-		 * -EINVAL). This part has ACD -- the vendor's gen8_6_0 entry lists
-		 * ADRENO_ACD -- and the vendor sends that state as the very first thing
-		 * in gen8_gmu_first_boot, before the CX GDSC, before the clocks and
-		 * before the firmware is loaded.
-		 *
-		 * Both nodes come from the SoC's own vendor device tree, including the
-		 * IPCC client/signal numbers; the vendor's GMU node carries
-		 * qcom,qmp = <&aoss_qmp>, which is the property the driver reads through
-		 * qmp_get().
+		 * IPCC and the AOSS QMP on it, from the SoC's vendor device tree.
+		 * a6xx_gmu_acd_probe() sends the GPU's ACD state through qmp_send()
+		 * and bails out without qcom,qmp; this part has ACD (ADRENO_ACD in
+		 * the vendor's gen8_6_0 entry) and its GMU node carries qcom,qmp.
 		 */
 		ipcc_mproc: mailbox@406000 {
 			compatible = "qcom,ipcc";
@@ -204,6 +177,12 @@
 			#clock-cells = <0>;
 		};
 
+		/*
+		 * The GPU clock controller and the GX clock/power block, from the
+		 * factory device tree ("qcom,tuna-gpucc", "qcom,tuna-gx_clkctl"):
+		 * the 0x9800 window covers gpucc-tuna.c's max_register 0x964c, and
+		 * the clock inputs are the two GPLL0s gcc-tuna.c registers.
+		 */
 		gpucc: clock-controller@3d90000 {
 			compatible = "qcom,tuna-gpucc";
 			reg = <0 0x03d90000 0 0x9800>;
@@ -212,6 +191,14 @@
 				 <&gcc GCC_GPU_GPLL0_DIV_CPH_CLK_SRC>;
 			clock-names = "bi_tcxo", "gcc_gpu_gpll0_cph_clk_src",
 				      "gcc_gpu_gpll0_div_cph_clk_src";
+
+			/*
+			 * No rail of this device's own: it never suspends, so a rail
+			 * held here is held forever. vdd_cx is the exception -- gpucc
+			 * owns the CX GDSC and gdsc.c consumes the supply for that
+			 * domain's transitions, as the factory tree's gpucc does.
+			 */
+			vdd_cx-supply = <&vreg_cx_level>;
 			#clock-cells = <1>;
 			#reset-cells = <1>;
 			#power-domain-cells = <1>;
@@ -225,68 +212,37 @@
 		gxclkctl: clock-controller@3d64000 {
 			compatible = "qcom,tuna-gxclkctl";
 			/*
-			 * The block starts at 0x3d64000 and the GX GDSC register is
-			 * at offset 0x4024 inside it, which is the 0x3d68024 the
-			 * factory device tree names. Declaring the base as 0x3d68024
-			 * with a size of 8 -- as this node first did -- gives a
-			 * regmap whose offsets are counted from the wrong place, so
-			 * the driver would have read and written the wrong register
-			 * even once it matched.
-			 *
-			 * kaanapali.dtsi declares the same block the same way
-			 * (0x3d64000, size 0x6000), which is what this follows.
+			 * Block base 0x3d64000; the GX GDSC register sits at offset
+			 * 0x4024, the factory tree's 0x3d68024. Declaring the base as
+			 * 0x3d68024 would misplace every regmap offset, so this
+			 * follows kaanapali.dtsi and maps the whole block.
 			 */
 			reg = <0 0x03d64000 0 0x6000>;
 
 			/*
-			 * The GX rail's parents. RPMHPD_GFX and RPMHPD_GMXC are the
-			 * RPMh corners and gpucc's CX GDSC is the local one, same
-			 * three as kaanapali's node. Without these the rail has no
-			 * supply to switch, which matters because this is the domain
-			 * the GPU core comes up on.
-			 */
-			/*
-			 * One domain, which is what the SoC's own vendor devicetree
-			 * says (oneplus-dt .../devicetree/qcom/tuna.dtsi):
-			 *
-			 *     gxclkctl: clock-controller@3d68024 {
-			 *             compatible = "qcom,tuna-gx_clkctl";
-			 *             reg = <0x3d68024 0x8>;
-			 *             power-domains = <&gpucc GPU_CC_CX_GDSC>;
-			 *             vdd_gx-supply = <&VDD_GFX_MXC_VOTER_LEVEL>;
-			 *     };
-			 *
-			 * This node previously carried three domains copied from
-			 * kaanapali.dtsi (RPMHPD_GFX, RPMHPD_GMXC and the CX GDSC).
-			 * kaanapali is a different SoC and that was the mistake
-			 * AGENTS.md section 6.1 warns about: sibling values are a
-			 * reading dictionary, not a source. The vdd_gx supply is a
-			 * qcom,stub-regulator in the vendor tree, i.e. a bring-up
-			 * placeholder rather than a real rail, so voltage is left to
-			 * RPMh here for the same reason.
+			 * One domain, as the SoC's own vendor device tree has it
+			 * (oneplus-dt .../devicetree/qcom/tuna.dtsi, whose gxclkctl node
+			 * is "qcom,tuna-gx_clkctl" at 0x3d68024, with the same
+			 * power-domains and vdd_gx-supply).
 			 */
 			power-domains = <&gpucc GPU_CC_CX_GDSC>;
+
+			/*
+			 * The factory tree wires vdd_gx here (<&VDD_GFX_MXC_VOTER_LEVEL>,
+			 * a child of gfx.lvl) and its GX GDSC .supply is "vdd_gx", the
+			 * hook gdsc_gx_do_nothing_enable() enables. Without it a resume
+			 * has no rail and the firmware's clock HAL times out.
+			 */
+			vdd_gx-supply = <&vreg_gx_voter_level>;
 
 			#power-domain-cells = <1>;
 		};
 
 		/*
-		 * The GPU's own SMMU. Address, interrupt list and the clock/power
-		 * inputs come from the board's factory device tree, which names
-		 * the same block "kgsl-smmu@3da0000" with
-		 * compatible = "qcom,qsmmu-v500", "qcom,adreno-smmu".
-		 *
-		 * The compatible list is reordered for mainline, whose binding
-		 * wants the SoC-specific string first: sm8650.dtsi, whose
-		 * adreno_smmu sits at this very address with the same first ten
-		 * global interrupts (GIC_SPI 673, then 677-687), is the template.
-		 * Beyond those ten the two parts differ, so the full 25-interrupt
-		 * list here is the vendor's, not sm8650's.
-		 *
-		 * qcom,use-3-lvl-tables is a vendor property and is deliberately
-		 * not carried over: mainline's arm-smmu-qcom sets the table format
-		 * from the compatible, and passing a vendor-only property would
-		 * have no effect while looking like it did.
+		 * The GPU's own SMMU, from the factory device tree
+		 * ("kgsl-smmu@3da0000"); the SoC string leads the compatible list,
+		 * the first ten interrupts match sm8650's and the rest are the
+		 * vendor's. qcom,use-3-lvl-tables is omitted: the compatible sets it.
 		 */
 		gpu_smmu: iommu@3da0000 {
 			compatible = "qcom,tuna-smmu-500", "qcom,adreno-smmu",
@@ -319,23 +275,25 @@
 				     <GIC_SPI 666 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 668 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 699 IRQ_TYPE_LEVEL_HIGH>;
-			clocks = <&gpucc GPU_CC_HLOS1_VOTE_GPU_SMMU_CLK>;
-			clock-names = "gpu_cc_hlos1_vote_gpu_smmu";
+			/*
+			 * The SMMU resumes before the GPU it supplies, so it must clock
+			 * the gpucc block itself: gpu_cc_hlos1_vote_gpu_smmu_clk lives
+			 * there, and without GPU_CC_AHB_CLK the vote branch stalls at
+			 * 'off' (-16) and the GPU resume fails.
+			 */
+			clocks = <&gpucc GPU_CC_AHB_CLK>,
+				 <&gpucc GPU_CC_HLOS1_VOTE_GPU_SMMU_CLK>;
+			clock-names = "gpu_cc_ahb",
+				      "gpu_cc_hlos1_vote_gpu_smmu";
 			power-domains = <&gpucc 1>;
 			dma-coherent;
 		};
 
 		/*
-		 * The GPU and its GMU. Both addresses, the interrupt numbers and the
-		 * register windows come from the board's factory device tree, which
-		 * names them "kgsl-3d0@3d00000" and "qcom,gmu@3d37000".
-		 *
-		 * They are siblings, not parent and child: mainline reaches the GMU
-		 * through the GPU node's qcom,gmu phandle, which the board file sets,
-		 * and both therefore have to be real platform devices.
-		 *
-		 * The GPU status stays disabled here and is enabled per board, since
-		 * which chip id the node advertises is a property of the part fitted.
+		 * The GPU and its GMU, both from the factory device tree
+		 * ("kgsl-3d0@3d00000", "qcom,gmu@3d37000"). They are siblings:
+		 * mainline reaches the GMU through the GPU's qcom,gmu phandle, so
+		 * both are real platform devices, and status is set per board.
 		 */
 		gpu: gpu@3d00000 {
 			compatible = "qcom,adreno";
@@ -603,7 +561,10 @@
 				rpmhpd_opp_table: opp-table {
 					compatible = "operating-points-v2";
 					rpmhpd_opp_low: opp-64 { opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>; };
+					rpmhpd_opp_svs: opp-128 { opp-level = <RPMH_REGULATOR_LEVEL_SVS>; };
+					rpmhpd_opp_svs_l1: opp-192 { opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>; };
 					rpmhpd_opp_nom: opp-256 { opp-level = <RPMH_REGULATOR_LEVEL_NOM>; };
+					rpmhpd_opp_turbo: opp-384 { opp-level = <RPMH_REGULATOR_LEVEL_TURBO>; };
 				};
 			};
 		};
