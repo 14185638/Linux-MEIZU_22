@@ -134,14 +134,12 @@
 						data-lanes = <0 1 2 3>;
 
 						/*
-						 * The panel drives TE on TLMM GPIO 77, which the vendor muxes to
-						 * "mdp_vsync_p" and sources its tear-check block from
-						 * (qcom,panel-te-source = <0>). A command-mode panel that has not
-						 * started scanning produces no TE, so the DPU's tear block is driven
-						 * from the free-running watchdog timer instead; that removes the
-						 * dependency on the panel before the link is known to be up.
+						 * The panel's own TE pin, TLMM 77 (the factory's qcom,panel-te-source = <0>):
+						 * the interface then paces itself against the panel.  It must be selected
+						 * from boot, because the tear-check registers are single-buffered and latch
+						 * only while VSYNC_COUNTER_EN is clear.
 						 */
-						qcom,te-source = "timer0";
+						qcom,te-source = "mdp_vsync_p";
 					};
 				};
 			};
@@ -164,12 +162,6 @@
 				vdd-supply = <&vreg_ldod3>;
 				reset-gpios = <&tlmm 14 GPIO_ACTIVE_LOW>;
 
-				/*
-				 * dpu_kms_dsi_set_te_source() matches this string against
-				 * dpu_vsync_sources[]. With it absent the DPU watches DPU_VSYNC_SOURCE_GPIO_0
-				 * instead -- the wrong pin -- and every commit ends in "frame done
-				 * timeout". The panel drives TE on TLMM GPIO 77, muxed to "mdp_vsync_p".
-				 */
 				/*
 				 * Pinctrl for the TE pin is not repeated here: the DPU
 				 * (ae01000.display-controller) already claims GPIO 77 with
