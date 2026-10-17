@@ -34,6 +34,10 @@
 
 #define DSI_RESET_TOGGLE_DELAY_MS 20
 
+#define REG_DSI_DMA_FIFO_CTRL			0x0000004c
+#define REG_DSI_RDBK_DATATYPE0			0x00000078
+#define REG_DSI_RDBK_DATATYPE1			0x0000007c
+
 static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc_config *dsc);
 
 static int dsi_get_version(const void __iomem *base, u32 *major, u32 *minor)
@@ -191,16 +195,18 @@ struct msm_dsi_host {
 	u32 dma_cmd_ctrl_restore;
 
 	/*
-	 * Set while a batch of messages is being pushed: the command engine
-	 * stays enabled and the bus is not released until the last message of
-	 * the set, so a multi-command set reaches the panel as one stream.
+	 * One factory group can be several packets; the packets are appended to
+	 * the TX buffer at tx_offset and transferred by the group's last one.
+	 * batch_open says the controller setup for that group is still up.
 	 */
-	bool cmd_batch_open;
+	u32 tx_offset;
+	bool batch_open;
 
 	bool registered;
 	bool power_on;
 	bool enabled;
 	int irq;
+	u32 last_isr;
 };
 
 static inline u32 dsi_read(struct msm_dsi_host *msm_host, u32 reg)
@@ -675,9 +681,23 @@ unsigned long dsi_byte_clk_get_rate(struct mipi_dsi_host *host, bool is_bonded_d
 
 static void dsi_calc_pclk(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 {
-	msm_host->pixel_clk_rate = dsi_get_pclk_rate(msm_host->mode, msm_host->dsc, is_bonded_dsi);
 	msm_host->byte_clk_rate = dsi_byte_clk_get_rate(&msm_host->base, is_bonded_dsi,
 							msm_host->mode);
+
+	/*
+	 * For a command mode panel the pixel clock is how fast the interface hands
+	 * compressed data to the controller, so it must not be reduced by the
+	 * compression ratio the way upstream does it for the link.  The factory's
+	 * stack runs this PHY with the pixel divider at 3 (DIV_CTRL_7_4 = 3,
+	 * CLK_CFG0 = 0x31) and its DSI reports PIXEL_CLK = 183.5 MHz against
+	 * BYTE_CLK = 137.625 MHz = byte_clk * 4 / 3; video mode keeps upstream's value.
+	 */
+	if (msm_host->dsc && !(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO))
+		msm_host->pixel_clk_rate = msm_host->byte_clk_rate * 4 / 3;
+	else
+		msm_host->pixel_clk_rate = dsi_get_pclk_rate(msm_host->mode,
+						msm_host->dsc, is_bonded_dsi);
+
 
 	DBG("pclk=%lu, bclk=%lu", msm_host->pixel_clk_rate,
 				msm_host->byte_clk_rate);
@@ -868,6 +888,12 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 			if (cfg_hnd->minor >= MSM_DSI_6G_VER_MINOR_V1_3)
 				data |= DSI_CMD_MODE_MDP_CTRL2_BURST_MODE;
 
+			/*
+			 * Wide bus is what upstream programs here, and it is
+			 * what this board runs with: the handover rate was
+			 * fixed on the PHY side (dsi_phy_7nm.c, byte clock and
+			 * out-div), not by de-widening the databus.
+			 */
 			if (msm_dsi_host_is_wide_bus_enabled(&msm_host->base))
 				data |= DSI_CMD_MODE_MDP_CTRL2_DATABUS_WIDEN;
 
@@ -880,7 +906,13 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 			DSI_CMD_DMA_CTRL_LOW_POWER);
 
 	data = 0;
-	/* Always assume dedicated TE pin */
+	/*
+	 * Bit 31 is the factory's value: dsi_ctrl_hw_cmn.c,
+	 * dsi_setup_trigger_controls() sets it for DSI_TE_ON_EXT_PIN, i.e. "the
+	 * panel's TE arrives on the controller's dedicated TE pin and the
+	 * command path is triggered from it".  The factory's running controller
+	 * reads back 0x80002004 (bit 31 set, DMA trigger 4 = SW).
+	 */
 	data |= DSI_TRIG_CTRL_TE;
 	data |= DSI_TRIG_CTRL_MDP_TRIGGER(TRIGGER_NONE);
 	data |= DSI_TRIG_CTRL_DMA_TRIGGER(TRIGGER_SW);
@@ -911,8 +943,15 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 		data |= DSI_EOT_PACKET_CTRL_TX_EOT_APPEND;
 	dsi_write(msm_host, REG_DSI_EOT_PACKET_CTRL, data);
 
-	/* allow only ack-err-status to generate interrupt */
-	dsi_write(msm_host, REG_DSI_ERR_INT_MASK0, 0x13ff3fe0);
+	/*
+	 * The factory enables the five lane-error bits here that mainline's
+	 * 0x13ff3fe0 masks off: its running controller reads back 0x13f03b1f,
+	 * i.e. bits 0-4 set (DLN0_PHY_ERR's error flags mirrored into the
+	 * interrupt mask) and bits 16-19 clear.  Masking them makes a DSI that
+	 * transmits into a dead link report nothing at all, so keep the
+	 * factory's value.
+	 */
+	dsi_write(msm_host, REG_DSI_ERR_INT_MASK0, 0x13f03b1f);
 
 	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_ERROR, 1);
 
@@ -942,6 +981,20 @@ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
 
 	if (msm_host->cphy_mode)
 		dsi_write(msm_host, REG_DSI_CPHY_MODE_CTRL, BIT(0));
+
+	/*
+	 * SM8735 vendor command-mode setup (dsi_ctrl_hw_cmn_setup_command_mode, DisplayDxe):
+	 * RDBK_DATATYPE0 (0x78) accepts short reads 0x11/0x12/0x21/0x22 and
+	 * RDBK_DATATYPE1 (0x7c) long/ack reads 0x02/0x1A/0x1C; LP_TIMER_CTRL (0xb4) =
+	 * 0xFFFFFFFF, since reset (0) times BTA out instantly; HS_TIMER_CTRL (0xb8) =
+	 * 0x00049C3C, the vendor's "HS Timer value" (reset 0x0000FFFF); DMA_FIFO_CTRL
+	 * (0x4c) clears the read/write watermarks (bits 16, 20), as kickoff_command does.
+	 */
+	dsi_write(msm_host, REG_DSI_RDBK_DATATYPE0, 0x22211211);
+	dsi_write(msm_host, REG_DSI_RDBK_DATATYPE1, 0x001C1A02);
+	dsi_write(msm_host, REG_DSI_LP_TIMER_CTRL, 0xFFFFFFFF);
+	dsi_write(msm_host, REG_DSI_HS_TIMER_CTRL, 0x00049C3C);
+	dsi_write(msm_host, REG_DSI_DMA_FIFO_CTRL, 0x00110000);
 }
 
 static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mode)
@@ -999,11 +1052,18 @@ static void dsi_update_dsc_timing(struct msm_dsi_host *msm_host, bool is_cmd_mod
 		reg_ctrl2 |= DSI_COMMAND_COMPRESSION_MODE_CTRL2_STREAM0_SLICE_WIDTH(dsc->slice_chunk_size);
 
 		/*
-		 * Stream 1 of both registers is deliberately left at its reset
-		 * value: the vendor's running controller has stream1 EN = 0 and
-		 * stream1 SLICE_WIDTH = 0, while it does program the matching
-		 * DSI_CMD_MDP_STREAM1_* registers in dsi_timing_setup().
+		 * Stream 1 gets stream 0's compression framing.  The vendor's
+		 * controller leaves stream1 EN and SLICE_WIDTH at zero because
+		 * its two DSC encoders are merged into one interface, while here
+		 * both 600-byte slices travel as their own packet: framing only
+		 * stream 0 leaves half the picture pure noise.  The halves are
+		 * symmetric (datatype, pkt_per_line, eol, enable 16 bits apart).
 		 */
+		reg_ctrl &= ~0xffff0000;
+		reg_ctrl |= (reg & 0xffff) << 16;
+		reg_ctrl2 &= ~(0xffff << 16);
+		reg_ctrl2 |= (dsc->slice_chunk_size & 0xffff) << 16;
+
 		dsi_write(msm_host, REG_DSI_COMMAND_COMPRESSION_MODE_CTRL, reg_ctrl);
 		dsi_write(msm_host, REG_DSI_COMMAND_COMPRESSION_MODE_CTRL2, reg_ctrl2);
 	} else {
@@ -1157,10 +1217,11 @@ static void dsi_timing_setup(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
 			DSI_CMD_MDP_STREAM0_TOTAL_V_TOTAL(mode->vdisplay));
 
 		/*
-		 * The vendor programs stream 1 with the same values as stream
-		 * 0. The two streams feed the two DSC encoders of this panel's
-		 * topology (qcom,display-topology = <2 2 1>), so leaving one
-		 * at reset halves what the interface was dimensioned to drive.
+		 * Stream 1 carries the second DSC slice of every line.  It is
+		 * framed exactly like stream 0, on the same virtual channel:
+		 * the vendor's controller leaves stream 1 at reset values
+		 * because its two DSC encoders are merged into one interface,
+		 * while here both slices travel as their own packet.
 		 */
 		dsi_write(msm_host, REG_DSI_CMD_MDP_STREAM1_CTRL,
 			DSI_CMD_MDP_STREAM0_CTRL_WORD_COUNT(wc) |
@@ -1196,7 +1257,14 @@ static void dsi_sw_reset(struct msm_dsi_host *msm_host)
 	/* dsi controller can only be reset while clocks are running */
 	dsi_write(msm_host, REG_DSI_RESET, 1);
 	msleep(DSI_RESET_TOGGLE_DELAY_MS); /* make sure reset happen */
-	dsi_write(msm_host, REG_DSI_RESET, 0);
+	/*
+	 * Release with bits 10..12 set: both known-good configurations of this
+	 * controller (the bootloader's and the vendor's Android) read RESET
+	 * (0x114) back as 0x00001c00, while upstream writes 0 and leaves those
+	 * bits clear.  dsi.xml does not document them; this is the power-on
+	 * value only, msm_dsi_host_init() is the only caller.
+	 */
+	dsi_write(msm_host, REG_DSI_RESET, 0x1c00);
 	wmb(); /* controller out of reset */
 
 	if (ctrl & DSI_CTRL_ENABLE) {
@@ -1376,6 +1444,7 @@ static int dsi_cmd_dma_add(struct msm_dsi_host *msm_host,
 	struct mipi_dsi_packet packet;
 	int len;
 	int ret;
+	u32 off;
 	u8 *data;
 
 	ret = mipi_dsi_create_packet(&packet, msg);
@@ -1385,7 +1454,16 @@ static int dsi_cmd_dma_add(struct msm_dsi_host *msm_host,
 	}
 	len = (packet.size + 3) & (~0x3);
 
-	if (len > msm_host->tx_size) {
+	/*
+	 * The factory appends every packet of a group to one command buffer and kicks off
+	 * once, on the group's last packet: only DSI_CTRL_CMD_LAST_COMMAND moves cmd_len
+	 * into cmd_mem.length and triggers (dsi_ctrl.c, FETCH_MEMORY).  The groups are the
+	 * runs the panel's DT marks MIPI_DSI_MSG_BATCH_COMMAND, and the receiver sees no
+	 * transaction boundary except where the factory puts one -- 104 packets in 25
+	 * groups.  Accumulate here; the last packet transfers, a batch member returns 0 (success).
+	 */
+	off = msm_host->tx_offset;
+	if (len + off > msm_host->tx_size) {
 		pr_err("%s: packet size is too big\n", __func__);
 		return -EINVAL;
 	}
@@ -1396,6 +1474,7 @@ static int dsi_cmd_dma_add(struct msm_dsi_host *msm_host,
 		pr_err("%s: get vaddr failed, %d\n", __func__, ret);
 		return ret;
 	}
+	data += off;
 
 	/* MSM specific command format in memory */
 	data[0] = packet.header[1];
@@ -1404,9 +1483,11 @@ static int dsi_cmd_dma_add(struct msm_dsi_host *msm_host,
 
 	/*
 	 * Byte 3 is the command descriptor's flag byte; bit 7 marks the last
-	 * packet and makes the controller release the bus to LP-11. The vendor
-	 * leaves it clear for every message of a command set but the last, so
-	 * the set goes out as one continuous burst.
+	 * packet of a transaction and makes the controller release the bus to
+	 * LP-11.  The factory's sequence bytes carry exactly this structure in
+	 * their fourth byte (0x40 = the group continues, 0x00 = the group ends):
+	 * the power-on set is 104 packets in 25 groups, and the panel's receiver
+	 * never sees a transaction boundary except where the factory puts one.
 	 */
 	data[3] = (msg->flags & MIPI_DSI_MSG_BATCH_COMMAND) ? 0 : BIT(7);
 	if (mipi_dsi_packet_format_is_long(msg->type))
@@ -1425,7 +1506,14 @@ static int dsi_cmd_dma_add(struct msm_dsi_host *msm_host,
 	if (cfg_hnd->ops->tx_buf_put)
 		cfg_hnd->ops->tx_buf_put(msm_host);
 
-	return len;
+	if (msg->flags & MIPI_DSI_MSG_BATCH_COMMAND) {
+		msm_host->tx_offset = off + len;
+		msm_host->batch_open = true;
+		return 0;
+	}
+
+	msm_host->tx_offset = 0;
+	return off + len;
 }
 
 /*
@@ -1498,7 +1586,6 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
 	int ret;
 	uint64_t dma_base;
-	bool triggered;
 
 	ret = cfg_hnd->ops->dma_base_get(msm_host, &dma_base);
 	if (ret) {
@@ -1510,21 +1597,44 @@ static int dsi_cmd_dma_tx(struct msm_dsi_host *msm_host, int len)
 
 	dsi_wait4video_eng_busy(msm_host);
 
-	triggered = msm_dsi_manager_cmd_xfer_trigger(
-						msm_host->id, dma_base, len);
-	if (triggered) {
-		ret = wait_for_completion_timeout(&msm_host->dma_comp,
-					msecs_to_jiffies(200));
-		DBG("ret=%d", ret);
-		if (ret == 0)
-			ret = -ETIMEDOUT;
-		else
-			ret = len;
-	} else {
-		ret = len;
+	msm_dsi_manager_cmd_xfer_trigger(msm_host->id, dma_base, len);
+
+	/*
+	 * The transfer finishes inside msm_dsi_host_cmd_xfer_commit(): it
+	 * triggers and then waits the way the factory's
+	 * dsi_ctrl_dma_cmd_wait_for_done() does, so there is nothing left to
+	 * wait for here.  (Waiting here as well could only consume a
+	 * completion the next command needs.)
+	 */
+	return len;
+}
+
+/*
+ * The factory's read core (dsi_ctrl_hw_cmn_get_cmd_read_data) samples a DCS
+ * response only after the bus turnaround: it polls INT_CTRL bit 20 (BTA_DONE)
+ * for up to 0xA6 * 100 us, then reads RDBK and treats RDBK_DATA_CTRL.COUNT == 0
+ * as "no data read".  mainline waits for CMD_DMA_DONE (the memory-to-FIFO half)
+ * and samples RDBK unconditionally, so a silent panel looks like an answer and
+ * a zero response is parsed as data.  Do the factory's wait, return its count.
+ */
+static u32 dsi_wait_for_bta_done(struct msm_dsi_host *msm_host)
+{
+	u32 intr, rdbk_ctrl;
+	int i;
+
+	for (i = 0; i < 200; i++) {
+		intr = dsi_read(msm_host, REG_DSI_INTR_CTRL);
+		rdbk_ctrl = dsi_read(msm_host, REG_DSI_RDBK_DATA_CTRL);
+
+		if (rdbk_ctrl >> 16)
+			break;
+		if ((intr | msm_host->last_isr) & DSI_IRQ_BTA_DONE)
+			break;
+		udelay(100);
 	}
 
-	return ret;
+	rdbk_ctrl = dsi_read(msm_host, REG_DSI_RDBK_DATA_CTRL);
+	return (rdbk_ctrl >> 16) & 0xff;
 }
 
 static int dsi_cmd_dma_rx(struct msm_dsi_host *msm_host,
@@ -1533,9 +1643,10 @@ static int dsi_cmd_dma_rx(struct msm_dsi_host *msm_host,
 	u32 *temp, data;
 	int i, j = 0, cnt;
 	u32 read_cnt;
-	u8 reg[16];
+	u8 reg[16] = { 0 };
 	int repeated_bytes = 0;
 	int buf_offset = buf - msm_host->rx_buf;
+	int max_valid_bytes;
 
 	temp = (u32 *)reg;
 	cnt = (rx_byte + 3) >> 2;
@@ -1570,7 +1681,8 @@ static int dsi_cmd_dma_rx(struct msm_dsi_host *msm_host,
 		DBG("data = 0x%x and ntohl(data) = 0x%x", data, ntohl(data));
 	}
 
-	for (i = repeated_bytes; i < 16; i++)
+	max_valid_bytes = min_t(int, 16, cnt * 4);
+	for (i = repeated_bytes; i < max_valid_bytes; i++)
 		buf[j++] = reg[i];
 
 	return j;
@@ -1589,6 +1701,10 @@ static int dsi_cmds2buf_tx(struct msm_dsi_host *msm_host,
 			__func__,  msg->type);
 		return len;
 	}
+
+	/* Accumulated into the open group; the group's last packet transfers it. */
+	if (!len)
+		return 0;
 
 	/*
 	 * for video mode, do not send cmds more than
@@ -1679,17 +1795,22 @@ static void dsi_dln0_phy_err(struct msm_dsi_host *msm_host)
 	}
 }
 
+#define DSI_FIFO_ERR_MASK (BIT(7) | BIT(10) | BIT(18) | BIT(19) | \
+			   BIT(22) | BIT(23) | BIT(26) | BIT(27) | \
+			   BIT(30) | BIT(31))
+
 static void dsi_fifo_status(struct msm_dsi_host *msm_host)
 {
-	u32 status;
+	u32 status, err;
 
 	status = dsi_read(msm_host, REG_DSI_FIFO_STATUS);
+	err = status & DSI_FIFO_ERR_MASK;
 
-	/* fifo underflow, overflow */
-	if (status) {
-		dsi_write(msm_host, REG_DSI_FIFO_STATUS, status);
+	/* fifo underflow, overflow (exclude normal Lane Empty bits 16, 20, 24, 28) */
+	if (err) {
+		dsi_write(msm_host, REG_DSI_FIFO_STATUS, err);
 		msm_host->err_work_state |= DSI_ERR_STATE_FIFO;
-		if (status & DSI_FIFO_STATUS_CMD_MDP_FIFO_UNDERFLOW)
+		if (err & DSI_FIFO_STATUS_CMD_MDP_FIFO_UNDERFLOW)
 			msm_host->err_work_state |=
 					DSI_ERR_STATE_MDP_FIFO_UNDERFLOW;
 	}
@@ -1747,6 +1868,7 @@ static irqreturn_t dsi_host_irq(int irq, void *ptr)
 	spin_lock_irqsave(&msm_host->intr_lock, flags);
 	isr = dsi_read(msm_host, REG_DSI_INTR_CTRL);
 	dsi_write(msm_host, REG_DSI_INTR_CTRL, isr);
+	msm_host->last_isr |= isr;
 	spin_unlock_irqrestore(&msm_host->intr_lock, flags);
 
 	DBG("isr=0x%x, id=%d", isr, msm_host->id);
@@ -2037,6 +2159,14 @@ static int dsi_host_parse_dt(struct msm_dsi_host *msm_host)
 		goto err;
 	}
 
+	/*
+	 * The factory's DT also carries qcom,dynamic-te-gpio, a second TE pin its
+	 * LTPO auto-refresh policy uses (its msm_drm.ko picks 120/90/60/45/30/20/10 Hz
+	 * from the frame content).  Switching between the two fixed rates does not
+	 * need it -- what re-times this panel is the pair of DCS sets this driver
+	 * sends -- and mainline has no auto-refresh support, so the tear check
+	 * keeps taking the single TE this board wires.
+	 */
 	ret = of_property_read_string(endpoint, "qcom,te-source", &te_source);
 	if (ret && ret != -EINVAL) {
 		DRM_DEV_ERROR(dev, "%s: invalid TE source configuration %d\n",
@@ -2129,6 +2259,7 @@ int msm_dsi_host_init(struct msm_dsi *msm_dsi)
 
 	/* fixup base address by io offset */
 	msm_host->ctrl_base += cfg->io_offset;
+
 	msm_host->ctrl_size -= cfg->io_offset;
 
 	ret = devm_regulator_bulk_get_const(&pdev->dev, cfg->num_regulators,
@@ -2181,6 +2312,7 @@ int msm_dsi_host_init(struct msm_dsi *msm_dsi)
 	msm_dsi->id = msm_host->id;
 
 	DBG("Dsi Host %d initialized", msm_host->id);
+
 	return 0;
 }
 
@@ -2253,6 +2385,11 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 				const struct mipi_dsi_msg *msg)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
+
+	/* The controller is already up for the group being accumulated. */
+	if (msm_host->batch_open)
+		return 0;
 
 	/* TODO: make sure dsi_cmd_mdp is idle.
 	 * Since DSI6G v1.2.0, we can set DSI_TRIG_CTRL.BLOCK_DMA_WITHIN_FRAME
@@ -2267,30 +2404,35 @@ int msm_dsi_host_xfer_prepare(struct mipi_dsi_host *host,
 	pm_runtime_get_sync(&msm_host->pdev->dev);
 
 	/*
-	 * The link clocks are enabled once by msm_dsi_host_power_on() and
-	 * stay up until power_off(); the vendor likewise takes its clock
-	 * votes once per display rather than once per message.
+	 * Upstream's per-message link clock handling is required: without it every
+	 * command completes at the DMA level and none reaches the panel (brightness,
+	 * DCS 0x28 and DCS 0x10 do nothing while frames arrive perfectly) -- the
+	 * packet is never clocked out.
 	 */
+	if (!msm_host->power_on) {
+		cfg_hnd->ops->link_clk_set_rate(msm_host);
+		cfg_hnd->ops->link_clk_enable(msm_host);
+	}
 
 	/* TODO: vote for bus bandwidth */
 
 	/*
-	 * Drive DSI_CMD_DMA_CTRL_LOW_POWER in both directions -- mainline
-	 * only ever cleared it -- but inside a batch leave the command engine
-	 * and the bus as the previous message left them, so a multi-command
-	 * set is not broken up into unrelated transactions.
+	 * Drive DSI_CMD_DMA_CTRL_LOW_POWER in both directions -- mainline only
+	 * ever cleared it.  Every message is its own transaction, as in the
+	 * factory driver: the grouping of a command set lives only in the
+	 * descriptor's "last packet" bit (see dsi_cmd_dma_add()), which holds
+	 * the bus in HS inside a group and releases it to LP-11 at the group's
+	 * end.
 	 */
-	if (!msm_host->cmd_batch_open) {
-		dsi_set_tx_power_mode((msg->flags & MIPI_DSI_MSG_USE_LPM) ? 1 : 0,
-				      msm_host);
+	dsi_set_tx_power_mode((msg->flags & MIPI_DSI_MSG_USE_LPM) ? 1 : 0,
+			      msm_host);
 
-		msm_host->dma_cmd_ctrl_restore = dsi_read(msm_host, REG_DSI_CTRL);
-		dsi_write(msm_host, REG_DSI_CTRL,
-			msm_host->dma_cmd_ctrl_restore |
-			DSI_CTRL_CMD_MODE_EN |
-			DSI_CTRL_ENABLE);
-		dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 1);
-	}
+	msm_host->dma_cmd_ctrl_restore = dsi_read(msm_host, REG_DSI_CTRL);
+	dsi_write(msm_host, REG_DSI_CTRL,
+		msm_host->dma_cmd_ctrl_restore |
+		DSI_CTRL_CMD_MODE_EN |
+		DSI_CTRL_ENABLE);
+	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 1);
 
 	return 0;
 }
@@ -2302,20 +2444,18 @@ void msm_dsi_host_xfer_restore(struct mipi_dsi_host *host,
 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
 
 	/*
-	 * While a batch is still open the controller stays enabled and the
-	 * power mode is untouched -- dsi_cmd_dma_add() has cleared the "last
-	 * packet" bit, so the bus stays in HS for the next command.
+	 * A batch member only appended its packet; the group is still open, so
+	 * leave the controller and the link clock exactly as they are.
 	 */
-	if (msg->flags & MIPI_DSI_MSG_BATCH_COMMAND) {
-		msm_host->cmd_batch_open = true;
-	} else {
-		msm_host->cmd_batch_open = false;
-		dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 0);
-		dsi_write(msm_host, REG_DSI_CTRL, msm_host->dma_cmd_ctrl_restore);
+	if (msg->flags & MIPI_DSI_MSG_BATCH_COMMAND)
+		return;
+	msm_host->batch_open = false;
 
-		if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
-			dsi_set_tx_power_mode(1, msm_host);
-	}
+	dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE, 0);
+	dsi_write(msm_host, REG_DSI_CTRL, msm_host->dma_cmd_ctrl_restore);
+
+	if (!(msg->flags & MIPI_DSI_MSG_USE_LPM))
+		dsi_set_tx_power_mode(1, msm_host);
 
 	/* TODO: unvote for bus bandwidth */
 
@@ -2337,12 +2477,16 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 				const struct mipi_dsi_msg *msg)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
-	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
-	int data_byte, rx_byte, dlen, end;
+	int data_byte = 0, rx_byte, dlen, end;
 	int short_response, diff, pkt_size, ret = 0;
 	char cmd;
 	int rlen = msg->rx_len;
 	u8 *buf;
+	u32 hw_read_cnt = 0;
+
+	/* A read is its own transaction; never append it to an open group. */
+	msm_host->tx_offset = 0;
+	msm_host->last_isr = 0;
 
 	if (rlen <= 2) {
 		short_response = 1;
@@ -2361,33 +2505,47 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 	buf = msm_host->rx_buf;
 	end = 0;
 	while (!end) {
+#define REG_DSI_TPG_DMA_FIFO_RESET		0x000001e8
+		/*
+		 * Follow vendor dsi_set_max_return_size() and DisplayDxe:
+		 * send SET_MAXIMUM_RETURN_PACKET_SIZE (0x37) as an independent
+		 * transaction, reset command FIFO state machine, then issue the read.
+		 */
 		u8 tx[2] = {pkt_size & 0xff, pkt_size >> 8};
 		struct mipi_dsi_msg max_pkt_size_msg = {
 			.channel = msg->channel,
 			.type = MIPI_DSI_SET_MAXIMUM_RETURN_PACKET_SIZE,
 			.tx_len = 2,
 			.tx_buf = tx,
+			.flags = 0,
 		};
 
-		DBG("rlen=%d pkt_size=%d rx_byte=%d",
-			rlen, pkt_size, rx_byte);
-
 		ret = dsi_cmds2buf_tx(msm_host, &max_pkt_size_msg);
-		if (ret < 2) {
+		if (ret < 0) {
 			pr_err("%s: Set max pkt size failed, %d\n",
 				__func__, ret);
 			return -EINVAL;
 		}
 
-		if ((cfg_hnd->major == MSM_DSI_VER_MAJOR_6G) &&
-			(cfg_hnd->minor >= MSM_DSI_6G_VER_MINOR_V1_1)) {
-			/* Clear the RDBK_DATA registers */
-			dsi_write(msm_host, REG_DSI_RDBK_DATA_CTRL,
-					DSI_RDBK_DATA_CTRL_CLR);
-			wmb(); /* make sure the RDBK registers are cleared */
-			dsi_write(msm_host, REG_DSI_RDBK_DATA_CTRL, 0);
-			wmb(); /* release cleared status before transfer */
-		}
+		/* Reset command FIFO state as vendor dsi_ctrl_hw_cmn_reset_cmd_fifo() */
+		dsi_write(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL, 0);
+		dsi_write(msm_host, REG_DSI_TPG_DMA_FIFO_RESET, 1);
+		udelay(1);
+		dsi_write(msm_host, REG_DSI_TPG_DMA_FIFO_RESET, 0);
+		/* the reset has to land before the next register write */
+		wmb();
+
+		/* Clear the RDBK_DATA registers before issuing read command */
+		dsi_write(msm_host, REG_DSI_RDBK_DATA_CTRL,
+				DSI_RDBK_DATA_CTRL_CLR);
+		/* the clear has to be in effect before the read is released */
+		wmb();
+		dsi_write(msm_host, REG_DSI_RDBK_DATA_CTRL, 0);
+		/* the release has to land before the command is issued */
+		wmb();
+
+		/* Enable BTA and DMA interrupts */
+		dsi_intr_ctrl(msm_host, DSI_IRQ_MASK_CMD_DMA_DONE | DSI_IRQ_MASK_BTA_DONE, 1);
 
 		ret = dsi_cmds2buf_tx(msm_host, msg);
 		if (ret < 0) {
@@ -2398,17 +2556,20 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 			return -ECOMM;
 		}
 
-		/*
-		 * once cmd_dma_done interrupt received,
-		 * return data from client is ready and stored
-		 * at RDBK_DATA register already
-		 * since rx fifo is 16 bytes, dcs header is kept at first loop,
-		 * after that dcs header lost during shift into registers
-		 */
+		/* Wait for BTA / peripheral response */
+		hw_read_cnt = dsi_wait_for_bta_done(msm_host);
+		if (hw_read_cnt == 0) {
+			/* No response returned by peripheral */
+			ret = -ETIMEDOUT;
+			goto out;
+		}
+
 		dlen = dsi_cmd_dma_rx(msm_host, buf, rx_byte, pkt_size);
 
-		if (dlen <= 0)
-			return 0;
+		if (dlen <= 0) {
+			ret = 0;
+			goto out;
+		}
 
 		if (short_response)
 			break;
@@ -2434,12 +2595,6 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 		}
 	}
 
-	/*
-	 * For single Long read, if the requested rlen < 10,
-	 * we need to shift the start position of rx
-	 * data buffer to skip the bytes which are not
-	 * updated.
-	 */
 	if (pkt_size < 10 && !short_response)
 		buf = msm_host->rx_buf + (10 - rlen);
 	else
@@ -2448,7 +2603,7 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 	cmd = buf[0];
 	switch (cmd) {
 	case MIPI_DSI_RX_ACKNOWLEDGE_AND_ERROR_REPORT:
-		pr_err("%s: rx ACK_ERR_PACLAGE\n", __func__);
+		pr_err("%s: rx ACK_ERR_PACKAGE\n", __func__);
 		ret = 0;
 		break;
 	case MIPI_DSI_RX_GENERIC_SHORT_READ_RESPONSE_1BYTE:
@@ -2464,10 +2619,11 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 		ret = dsi_long_read_resp(buf, msg);
 		break;
 	default:
-		pr_warn("%s:Invalid response cmd\n", __func__);
-		ret = 0;
+		pr_warn("%s: Invalid response cmd 0x%02x\n", __func__, cmd);
+		ret = -EIO;
 	}
 
+out:
 	return ret;
 }
 
@@ -2480,31 +2636,100 @@ int msm_dsi_host_cmd_rx(struct mipi_dsi_host *host,
 #define REG_DSI_VBIF_CTRL		0x000001c8
 #define DSI_VBIF_CTRL_PRIORITY__MASK	0x00000007
 
+/*
+ * Command packets go out through the controller's own command FIFO:
+ * TEST_PATTERN_GEN_CMD_DMA_INIT_VAL (0x17c vendor, 0x178 here) with TEST_PATTERN_GEN_CTRL
+ * as the source, as dsi_ctrl_hw_cmn_kickoff_fifo_command() does.  The host-memory path
+ * (DMA_BASE/DMA_LEN) is unusable here: commands complete at the DMA level and never reach
+ * the panel by IOVA, coherent or physical address alike.  The FIFO needs no bus fetch;
+ * its 1 KB on DSI 2.9 covers the 95-byte DSC PPS.
+ */
+#define REG_DSI_TPG_CMD_DMA_FIFO	0x00000178
+
+/*
+ * The factory's completion for a kickoff: dsi_ctrl_dma_cmd_wait_for_done()
+ * (dsi_ctrl.c) waits DSI_CTRL_TX_TO_MS = 1200 ms for CMD_MODE_DMA_DONE and, if
+ * the status bit arrived without the completion, clears it and says "dma_tx done
+ * but irq not triggered".  The long wait is required because the command DMA is
+ * triggered from TE (TRIG_CTRL.DMA_TRIGGER = 4): a command issued while the
+ * interface streams waits for a frame slot; a shorter timeout cuts it short.
+ */
+#define DSI_CMD_WAIT_MS		1200
+
+static void dsi_cmd_wait_done(struct msm_dsi_host *msm_host)
+{
+	if (!wait_for_completion_timeout(&msm_host->dma_comp,
+					 msecs_to_jiffies(DSI_CMD_WAIT_MS))) {
+		u32 isr = dsi_read(msm_host, REG_DSI_INTR_CTRL);
+
+		if (isr & DSI_IRQ_CMD_DMA_DONE) {
+			dsi_write(msm_host, REG_DSI_INTR_CTRL, isr);
+			pr_warn_once("DSI: cmd dma done but no irq\n");
+			return;
+		}
+
+		pr_warn_once("DSI: cmd dma done timeout\n");
+	}
+}
+
 void msm_dsi_host_cmd_xfer_commit(struct mipi_dsi_host *host, u32 dma_base,
 				  u32 len)
 {
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
-	u32 vbif;
+	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
+	const u32 *pkt = cfg_hnd->ops->tx_buf_get(msm_host);
+	u32 i, dwords = DIV_ROUND_UP(len, 4);
+
+	/* The FIFO path takes the packet from the TX buffer, not from dma_base. */
+	(void)dma_base;
 
 	/*
-	 * TEST_PATTERN_GEN_CTRL bit 2 is TPG_DMA_FIFO_MODE: when set the
-	 * command engine takes its payload from the test-pattern FIFO instead
-	 * of the address in DMA_CMD_OFFSET. The vendor's reset_cmd_fifo()
-	 * clears it before returning to the memory path; do the same here.
+	 * Raise this controller's bus priority, as the factory does in its
+	 * command kickoff.  It is sticky, so the frames the MDP feeds through
+	 * this same block inherit it; the bootloader and the vendor's Android
+	 * both leave DSI_VBIF_CTRL at 0x7 here.
 	 */
+	dsi_write(msm_host, REG_DSI_VBIF_CTRL,
+		  dsi_read(msm_host, REG_DSI_VBIF_CTRL) |
+		  DSI_VBIF_CTRL_PRIORITY__MASK);
+
+	if (IS_ERR(pkt))
+		return;
+
+	/* Drop whatever the previous transfer left in the FIFO. */
 	dsi_write(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL, 0);
+	dsi_write(msm_host, REG_DSI_TPG_DMA_FIFO_RESET, 1);
+	udelay(1);
+	dsi_write(msm_host, REG_DSI_TPG_DMA_FIFO_RESET, 0);
 
-	/* Raise the command engine's bus priority, as the vendor does. */
-	vbif = dsi_read(msm_host, REG_DSI_VBIF_CTRL);
-	vbif |= DSI_VBIF_CTRL_PRIORITY__MASK;
-	dsi_write(msm_host, REG_DSI_VBIF_CTRL, vbif);
+	dsi_write(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL,
+		  DSI_TEST_PATTERN_GEN_CTRL_CMD_DMA_TPG_EN |
+		  DSI_TEST_PATTERN_GEN_CTRL_TPG_DMA_FIFO_MODE |
+		  DSI_TEST_PATTERN_GEN_CTRL_CMD_DMA_PATTERN_SEL(3));
+	for (i = 0; i < dwords; i++)
+		dsi_write(msm_host, REG_DSI_TPG_CMD_DMA_FIFO, pkt[i]);
+	/* An odd DWORD count needs one trailing zero DWORD. */
+	if (dwords & 1)
+		dsi_write(msm_host, REG_DSI_TPG_CMD_DMA_FIFO, 0);
 
-	dsi_write(msm_host, REG_DSI_DMA_BASE, dma_base);
+	/*
+	 * The factory's kickoff_fifo_command() is followed immediately by
+	 * reset_cmd_fifo() and then dsi_ctrl_dma_cmd_wait_for_done(): the next command
+	 * may not start until CMD_MODE_DMA_DONE says this one is on the wire.  Polling
+	 * CMD_MODE_DMA_BUSY is no substitute -- the engine has not set that bit when
+	 * the poll's first read lands, so the poll can "complete" a transfer that
+	 * never started and the next group's FIFO reset cuts it short.
+	 */
+	reinit_completion(&msm_host->dma_comp);
 	dsi_write(msm_host, REG_DSI_DMA_LEN, len);
+	/* the length has to be in place before the trigger */
+	wmb();
 	dsi_write(msm_host, REG_DSI_TRIG_DMA, 1);
 
-	/* Make sure trigger happens */
-	wmb();
+	/* reset_cmd_fifo(), as the factory does right after the trigger. */
+	dsi_write(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL, 0);
+
+	dsi_cmd_wait_done(msm_host);
 }
 
 void msm_dsi_host_set_phy_mode(struct mipi_dsi_host *host,
@@ -2520,7 +2745,15 @@ void msm_dsi_host_reset_phy(struct mipi_dsi_host *host)
 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
 
 	DBG("");
-	dsi_write(msm_host, REG_DSI_PHY_RESET, DSI_PHY_RESET_RESET);
+	/*
+	 * The factory asserts bit 24 as well as bit 0 here --
+	 * dsi_ctrl_hw_cmn.c, dsi_ctrl_hw_cmn_phy_sw_reset() writes
+	 * BIT(24)|BIT(0) -- and the bootloader pulses the same two bits.
+	 * Mainline writes bit 0 only.  Bit 24 is undocumented in either header;
+	 * keep the factory's value, since this runs immediately before the PHY
+	 * enable sequence and whatever else it resets is re-programmed after.
+	 */
+	dsi_write(msm_host, REG_DSI_PHY_RESET, BIT(24) | DSI_PHY_RESET_RESET);
 	/* Make sure fully reset */
 	wmb();
 	udelay(1000);
@@ -2633,6 +2866,10 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
 	}
 
 	msm_host->byte_intf_clk_rate = msm_host->byte_clk_rate;
+	/*
+	 * The byte interface clock is half the byte clock when the PHY asks for
+	 * it; the factory runs it at 68.8125 MHz for this panel.
+	 */
 	if (phy_shared_timings->byte_intf_clk_div_2)
 		msm_host->byte_intf_clk_rate /= 2;
 
@@ -2666,6 +2903,16 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
 	dsi_timing_setup(msm_host, is_bonded_dsi);
 	dsi_sw_reset(msm_host);
 	dsi_ctrl_enable(msm_host, phy_shared_timings, phy);
+
+	/*
+	 * Reset the controller once more, now that it is enabled and the PHY is up:
+	 * the bootloader drives this panel before Linux starts and leaves the
+	 * command-mode DMA wedged (STATUS0 stuck on CMD_MODE_ENGINE_BUSY |
+	 * CMD_MODE_DMA_BUSY, no CMD_MODE_DMA_DONE ever).  A DSI_RESET pulse clears
+	 * it on the running controller, but not before enable (the call above);
+	 * the factory resets the same way on ESD recovery (dsi_ctrl_hw_cmn_soft_reset()).
+	 */
+	dsi_sw_reset(msm_host);
 
 	msm_host->power_on = true;
 	mutex_unlock(&msm_host->dev_mutex);
