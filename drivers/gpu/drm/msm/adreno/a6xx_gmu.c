@@ -65,7 +65,15 @@ static irqreturn_t a6xx_hfi_irq(int irq, void *data)
 	u32 status;
 
 	status = gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO);
-	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, status);
+	/*
+	 * Clear only the bits this handler acts on: writing the whole status
+	 * back also clears the MSGQ bit that a6xx_hfi_wait_for_msg_interrupt()
+	 * may be waiting on.  BIT(2) means the firmware posted a record on its
+	 * debug queue, which the vendor drains from the same handler.
+	 */
+	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, 0x8006);
+	if (status & BIT(2))
+		a6xx_hfi_process_debug_queue(gmu);
 
 	if (status & A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT) {
 		dev_err_ratelimited(gmu->dev, "GMU firmware fault\n");
@@ -295,29 +303,21 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 	u32 mask, reset_val, val;
 	int ret;
 
-
-	/*
-	 * M2582 probe, temporary. a6xx_gmu_fw_start has just written 0 to
-	 * FW_INIT_RESULT ("to make sure we are getting a fresh value"), so at
-	 * this point the register should read 0. If it still reads 0x901, the
-	 * write never took effect -- which would mean the register is not
-	 * writable, or the block is not really reachable -- and 0x901 is a
-	 * hardware default rather than something the firmware produced.
-	 */
-	dev_warn(gmu->dev, "M2582 probe: FW_INIT_RESULT after the clear = %08x\n",
-		 gmu_read(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT));
-
 	val = gmu_read(gmu, REG_A6XX_GMU_CM3_DTCM_START + 0xff8);
 	if (val <= 0x20010004) {
 		mask = 0xffffffff;
 		reset_val = 0xbabeface;
 	} else {
-		mask = 0x1ff;
+		/*
+		 * The firmware declares its own init complete with
+		 * FW_INIT_RESULT = 0x101 (BIT(0) | BIT(8)); testing for 0x100
+		 * with a 0x1ff mask rejects it on BIT(0).
+		 */
+		mask = 0x1fe;
 		reset_val = 0x100;
 	}
 
 	gmu_write(gmu, REG_A6XX_GMU_CM3_SYSRESET, 1);
-
 
 	/* Set the log wptr index
 	 * note: downstream saves the value in poweroff and restores it here
@@ -332,25 +332,22 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
 
 	gmu_write(gmu, REG_A6XX_GMU_CM3_SYSRESET, 0);
 
+	/*
+	 * The reset pulse erases the cache configuration a6xx_gmu_power_config()
+	 * set up, and the firmware's boot walk then fails its cache handshake;
+	 * re-apply it before releasing the CM3.
+	 */
+	gmu_write(gmu, REG_A6XX_GMU_SYS_BUS_CONFIG, 0x1);
+	gmu_write(gmu, REG_A6XX_GMU_ICACHE_CONFIG, 0x1);
+	gmu_write(gmu, REG_A6XX_GMU_DCACHE_CONFIG, 0x1);
+	/* the configuration has to be visible before the CM3 is released */
+	wmb();
+
 	ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT, val,
 		(val & mask) == reset_val, 100, 10000);
 
-	if (ret) {
-		u32 fwinit = gmu_read(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT);
-		u32 gmuver = gmu_read(gmu, REG_A6XX_GMU_CM3_SYSRESET);
-
-		DRM_DEV_ERROR(gmu->dev,
-			      "GMU firmware initialization timed out\n");
-		/*
-		 * M2582 bring-up probe, temporary. A register block that answers
-		 * with 0 or all-ones means the block is not really reachable,
-		 * which is a different problem from firmware that ran and
-		 * reported a bad result.
-		 */
-		DRM_DEV_ERROR(gmu->dev,
-			      "M2582 probe: FW_INIT_RESULT=%08x SYSRESET=%08x DTCM=%08x mask=%08x want=%08x\n",
-			      fwinit, gmuver, gmu_read(gmu, REG_A6XX_GMU_CM3_DTCM_START), mask, reset_val);
-	}
+	if (ret)
+		DRM_DEV_ERROR(gmu->dev, "GMU firmware initialization timed out\n");
 
 	set_bit(GMU_STATUS_FW_START, &gmu->status);
 
@@ -452,9 +449,13 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 	gmu_write(gmu, REG_A6XX_GMU_HOST2GMU_INTR_SET, 1 << request);
 
 	do {
-		/* Wait for the acknowledge interrupt */
+		/*
+		 * This part acknowledges GPU_SET on BIT(15), which the ack bit
+		 * mainline computes (BIT(31)) does not cover; without it the
+		 * handshake times out although the firmware has answered.
+		 */
 		ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO, val,
-			val & (1 << ack), 100, 10000);
+			val & ((1 << ack) | BIT(15)), 100, 10000);
 
 		if (!ret)
 			break;
@@ -605,7 +606,25 @@ static int a6xx_gmu_notify_slumber(struct a6xx_gmu *gmu)
 		a6xx_sptprac_disable(gmu);
 
 	if (!gmu->legacy) {
-		ret = a6xx_hfi_send_prep_slumber(gmu);
+		a6xx_hfi_process_debug_queue(gmu);
+		ret = a6xx_hfi_send_prep_slumber(gmu, 0, 0);
+		if (ret) {
+			/*
+			 * On this part the firmware can finish the slumber and
+			 * stop before the ack arrives.  The legacy path accepts
+			 * RPMH_POWER_STATE == 0x0f as "asleep", so accept it
+			 * here too rather than dropping to force_off.
+			 */
+			u32 rpmh = gmu_read(gmu,
+				REG_A8XX_GPU_GMU_CX_GMU_RPMH_POWER_STATE);
+
+			if (rpmh == 0x0f) {
+				dev_warn(gmu->dev,
+					 "no HFI answer to PREPARE_SLUMBER, but the GMU is in slumber (rpmh=%08x) -- continuing\n",
+					 rpmh);
+				ret = 0;
+			}
+		}
 		goto out;
 	}
 
@@ -669,7 +688,13 @@ static void a6xx_rpmh_stop(struct a6xx_gmu *gmu)
 	int ret;
 	u32 val;
 
-	if (test_and_clear_bit(GMU_STATUS_FW_START, &gmu->status))
+	/*
+	 * The vendor runs the RSC sleep handshake on every power collapse after
+	 * the first boot, not only before it.  GMU_STATUS_FW_START is this
+	 * tree's first-boot-done flag, so the gate is inverted: it is skipped
+	 * only until the firmware has started once.
+	 */
+	if (!test_bit(GMU_STATUS_FW_START, &gmu->status))
 		return;
 
 	if (adreno_is_a840(adreno_gpu))
@@ -703,9 +728,23 @@ static void a6xx_gmu_rpmh_init(struct a6xx_gmu *gmu)
 	void __iomem *pdcptr;
 	bool pdc_in_aop = false;
 
-	/* On A8x and above, RPMH/PDC configurations are entirely configured in AOP */
-	if (adreno_is_a8xx(adreno_gpu))
+	/*
+	 * On A8x and above the rest of the RPMH/PDC configuration lives in AOP,
+	 * but the vendor's gen8_gmu_register_config still programs the PDC
+	 * sequence here (0 to 0x4520, 0x80000001 to 0x4500); mainline returns
+	 * early and leaves the region unmapped.
+	 */
+	if (adreno_is_a8xx(adreno_gpu)) {
+		pdcptr = devm_platform_ioremap_resource_byname(pdev, "gmu_pdc");
+		if (IS_ERR(pdcptr)) {
+			DRM_DEV_ERROR(gmu->dev, "Unable to map the GPU PDC\n");
+			return;
+		}
+
+		writel(0, pdcptr + 0x4520);
+		writel(0x80000001, pdcptr + 0x4500);
 		return;
+	}
 
 	pdcptr = devm_platform_ioremap_resource_byname(pdev, "gmu_pdc");
 	if (IS_ERR(pdcptr))
@@ -992,6 +1031,21 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
 			return ret;
 	}
 
+	/*
+	 * The vendor's gen8_gmu_irq_enable sets these before the CM3 is
+	 * released.  mainline leaves GMU2HOST_INTR_MASK at the HFI mask, which
+	 * only covers CM3_FAULT, so the interrupt the firmware raises while it
+	 * walks its boot sequence (BIT(2)) stays masked.
+	 */
+	if (adreno_is_a8xx(adreno_gpu)) {
+		gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, 0xffffffff);
+		gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_CLR, 0xffffffff);
+		gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_MASK, 0xffff8009);
+		gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_MASK, 0xffffffd6);
+		/* mask the records before the firmware posts its first one */
+		wmb();
+	}
+
 	/* Clear init result to make sure we are getting a fresh value */
 	gmu_write(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT, 0);
 	gmu_write(gmu, REG_A6XX_GMU_CM3_BOOT_CONFIG, 0x02);
@@ -1000,22 +1054,27 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
 	gmu_write(gmu, REG_A6XX_GMU_HFI_QTBL_ADDR, gmu->hfi.iova);
 	gmu_write(gmu, REG_A6XX_GMU_HFI_QTBL_INFO, 1);
 
+	/*
+	 * The vendor's gen8_gmu_register_config writes these three before
+	 * releasing the CM3; mainline has no name for them.  0xf is the value
+	 * the working configuration wrote to 0x1f7e9.
+	 */
+	if (adreno_is_a8xx(adreno_gpu)) {
+		gmu_write(gmu, 0x1f7e9, 0xf);
+		gmu_write(gmu, 0x1f7ec, 0x00000001);
+		gmu_write(gmu, 0x1f7ed, 0x00000001);
+		/* these have to reach the CM3 before it is released */
+		wmb();
+	}
+
 	if (adreno_is_a8xx(adreno_gpu)) {
 		fence_range_upper = 0x32;
 		/*
-		 * 0x8a0, not 0x8c0. The vendor's gen8 GMU code -- the same
-		 * generation as this part, gen8_6_0 -- programs this register as
-		 *
-		 *   GEN8_GMUAO_AHB_FENCE_RANGE_0, BIT(31) |
-		 *   FIELD_PREP(GENMASK(30, 18), 0x32) |
-		 *   FIELD_PREP(GENMASK(17, 0), 0x8a0)
-		 *
-		 * in adreno_gen8_gmu.c, so all three of a7xx mainline, a8xx
-		 * mainline-as-written and the vendor agree on 0x8a0 except this
-		 * one line. The fence range decides which AHB accesses the GMU
-		 * considers fenced, so a wrong value is a plausible reason for
-		 * firmware that loads and starts to still report a bad init
-		 * result rather than a clean one.
+		 * The vendor's gen8 GMU code programs this as BIT(31) |
+		 * FIELD_PREP(GENMASK(30, 18), 0x32) |
+		 * FIELD_PREP(GENMASK(17, 0), 0x8a0), the same range a7xx
+		 * mainline uses; the a8xx value of 0x8c0 fences a different
+		 * AHB window.
 		 */
 		fence_range_lower = 0x8a0;
 	} else if (adreno_is_a7xx(adreno_gpu)) {
@@ -1057,6 +1116,30 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
 		gmu_write(gmu, REG_A8XX_GMU_GENERAL_8,
 			  (gmu->log.iova & GENMASK(31, 12)) |
 			  ((gmu->log.size / SZ_4K - 1) & GENMASK(7, 0)));
+
+		/*
+		 * GENERAL_11 is a queue descriptor the firmware pops during its
+		 * boot walk; mainline never writes it, so the firmware reads
+		 * NULL and every access returns "no queue".  The vendor points
+		 * it at the HFI table, but that table's first word is 0, which
+		 * the firmware reads as a zero limit.  Give it a small queue in
+		 * the dummy BO instead.
+		 */
+		if (gmu->dummy.virt) {
+			void __iomem *q = gmu->dummy.virt + 0x1000;
+			void __iomem *st = gmu->dummy.virt + 0x2000;
+
+			memset_io(st, 0, 0x100);
+			writel(0xfabafaba, st + 0x00);
+			writel(0x80, st + 0x0c);
+			memset_io(q, 0, 0x100);
+			writel(8, q + 0x00);
+			writel(gmu->dummy.iova + 0x2000, q + 0x08);
+			/* the queue has to be initialised before the GMU is told */
+			wmb();
+			gmu_write(gmu, REG_A8XX_GMU_GENERAL_11,
+				  gmu->dummy.iova + 0x1000);
+		}
 	} else if (adreno_is_a7xx(adreno_gpu)) {
 		gmu_write(gmu, REG_A7XX_GMU_GENERAL_10, chipid);
 		gmu_write(gmu, REG_A7XX_GMU_GENERAL_8,
@@ -1080,6 +1163,20 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
 
 	/* Set up the lowest idle level on the GMU */
 	a6xx_gmu_power_config(gmu);
+
+	/* The vendor's gen8_gmu_register_config clears the host->GMU state */
+	gmu_write(gmu, 0x1f813, 0);
+	gmu_write(gmu, REG_A6XX_GMU_HOST2GMU_INTR_CLR, ~0);
+
+	/*
+	 * The firmware's trace walker ends by storing NMIPENDSET into ICSR at
+	 * M3 0x13694; the NMI handler it enters parks in a spin and never
+	 * answers the host.  The store is a 16-bit instruction and the image is
+	 * mapped at IOVA 0x4000, so replace it with a NOP before the CM3 is
+	 * released.
+	 */
+	if (adreno_is_a8xx(adreno_gpu) && gmu->icache.virt)
+		writew(0xbf00, gmu->icache.virt + (0x13694 - 0x4000));
 
 	ret = a6xx_gmu_start(gmu);
 	if (ret)
@@ -1294,24 +1391,15 @@ done:
 
 static int a6xx_gmu_gxpd_get(struct a6xx_gmu *gmu)
 {
-	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
-	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
-
 	if (IS_ERR_OR_NULL(gmu->gxpd))
 		return 0;
 
 	/*
-	 * On A8xx HW, GX GDSC is moved to a new clk controller block under GX
-	 * power domain. The clock driver for this new block keeps the GX rail
-	 * voted when gxpd is voted. So, use the gxpd only during gpu recovery.
-	 */
-	if (adreno_gpu->info->family >= ADRENO_8XX_GEN1)
-		return 0;
-
-	/*
-	 * On A6x/A7x, "enable" the GX power domain which won't actually do
-	 * anything but it will make sure that the refcounting is correct in
-	 * case we need to bring down the GX after a GMU failure
+	 * On a8xx the GX GDSC lives in the GX clock controller's power domain
+	 * and the rail is a host vote, so this is the only place that raises it
+	 * before the firmware starts; the vendor's gen8_gmu_boot() votes it the
+	 * same way.  "Enable" the domain so the refcounting stays correct if
+	 * the GX side has to be brought down after a GMU failure.
 	 */
 	return pm_runtime_get_sync(gmu->gxpd);
 }
@@ -1340,7 +1428,8 @@ static int a6xx_gmu_gxpd_put(struct a6xx_gmu *gmu)
 		pm_runtime_put_sync(gmu->gxpd);
 	}
 
-	return 0;
+	/* Drop the vote a6xx_gmu_gxpd_get() raised */
+	return pm_runtime_put_sync(gmu->gxpd);
 }
 
 int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
@@ -1385,22 +1474,8 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
 
 	/* Check to see if we are doing a cold or warm boot */
 	if (adreno_is_a7xx(adreno_gpu) || adreno_is_a8xx(adreno_gpu)) {
-		u32 tcm_ret = a6xx_cx_misc_read(a6xx_gpu,
-						REG_A7XX_CX_MISC_TCM_RET_CNTL);
-
-		status = tcm_ret == 1 ? GMU_WARM_BOOT : GMU_COLD_BOOT;
-		/*
-		 * M2582 probe, temporary. This board shows a splash screen, so the
-		 * bootloader has already brought the GPU up and loaded GMU
-		 * firmware by the time Linux runs. Whether mainline then warm- or
-		 * cold-boots the GMU decides whether our firmware image is used at
-		 * all, and the "Loaded GMU firmware v5.4.1" line cannot answer
-		 * that because it reads GMU_CORE_FW_VERSION from the hardware.
-		 */
-		dev_warn(gmu->dev,
-			 "M2582 probe: TCM_RET_CNTL=%u status=%s GMU_CORE_FW_VERSION=%08x\n",
-			 tcm_ret, status == GMU_WARM_BOOT ? "WARM" : "COLD",
-			 gmu_read(gmu, REG_A6XX_GMU_CORE_FW_VERSION));
+		status = a6xx_cx_misc_read(a6xx_gpu, REG_A7XX_CX_MISC_TCM_RET_CNTL) == 1 ?
+			GMU_WARM_BOOT : GMU_COLD_BOOT;
 	} else if (gmu->legacy) {
 		status = gmu_read(gmu, REG_A6XX_GMU_GENERAL_7) == 1 ?
 			GMU_WARM_BOOT : GMU_COLD_BOOT;
@@ -1515,14 +1590,21 @@ static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
 			gmu_read(gmu,
 				REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS2));
 
+	/*
+	 * The vendor's gen8_gmu_power_off resets the CM3, drains the
+	 * outstanding RPMh votes and hands the GPU to the RSC before it stops
+	 * the HFI and the interrupts; mainline tears those down first and only
+	 * then tells the RSC, with the CM3 still running.
+	 */
+	gmu_write(gmu, REG_A6XX_GMU_CM3_SYSRESET, 1);
+	a6xx_gmu_rpmh_off(gmu);
+	a6xx_rpmh_stop(gmu);
+
 	/* Turn off HFI */
 	a6xx_hfi_stop(gmu);
 
 	/* Stop the interrupts and mask the hardware */
 	a6xx_gmu_irq_disable(gmu);
-
-	/* Tell RPMh to power off the GPU */
-	a6xx_rpmh_stop(gmu);
 
 	return;
 
@@ -1540,6 +1622,15 @@ int a6xx_gmu_stop(struct a6xx_gpu *a6xx_gpu)
 		return 0;
 
 	/*
+	 * Make sure the GX domain is off before turning off the GMU (CX)
+	 * domain, and before the RSC is told to slumber the domains it
+	 * controls.  The vendor takes GX over and collapses it while the
+	 * domain is still awake, then runs its RSC sleep sequence and checks
+	 * for "gx is stuck on" afterwards.
+	 */
+	a6xx_gmu_gxpd_put(gmu);
+
+	/*
 	 * Force the GMU off if we detected a hang, otherwise try to shut it
 	 * down gracefully
 	 */
@@ -1550,13 +1641,6 @@ int a6xx_gmu_stop(struct a6xx_gpu *a6xx_gpu)
 
 	/* Remove the bus vote */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, NULL);
-
-	/*
-	 * Make sure the GX domain is off before turning off the GMU (CX)
-	 * domain. Usually the GMU does this but only if the shutdown sequence
-	 * was successful
-	 */
-	a6xx_gmu_gxpd_put(gmu);
 
 	clk_bulk_disable_unprepare(gmu->nr_clocks, gmu->clocks);
 
@@ -2216,6 +2300,26 @@ static int cxpd_notifier_cb(struct notifier_block *nb,
 	if (action == GENPD_NOTIFY_OFF)
 		complete_all(&gmu->pd_gate);
 
+	/*
+	 * Vote the GMU's clocks the moment its power domain reports itself on.
+	 * They cannot be enabled earlier -- gmu, cxo and hub are CX clocks and
+	 * answer -EBUSY while the domain is down -- and arm-smmu, a supplier
+	 * of this device, needs them before its own resume runs.  The vendor
+	 * enables the domain first and the clocks immediately after
+	 * (gen8_gmu_boot), which is this order.
+	 */
+	if (action == GENPD_NOTIFY_ON) {
+		int i;
+
+		for (i = 0; i < gmu->nr_clocks; i++) {
+			int ret = clk_prepare_enable(gmu->clocks[i].clk);
+
+			if (ret)
+				dev_warn(gmu->dev, "failed to enable %s: %d\n",
+					 gmu->clocks[i].id, ret);
+		}
+	}
+
 	return 0;
 }
 
@@ -2496,6 +2600,14 @@ int a6xx_gmu_init(struct a6xx_gpu *a6xx_gpu, struct device_node *node)
 	init_completion(&gmu->pd_gate);
 	complete_all(&gmu->pd_gate);
 	gmu->pd_nb.notifier_call = cxpd_notifier_cb;
+
+	/*
+	 * Keep the notifier registered for the device's lifetime, not only
+	 * around a GPU reset: the wake half of the power sequence needs the
+	 * clock vote above on every resume.
+	 */
+	if (dev_pm_genpd_add_notifier(gmu->cxpd, &gmu->pd_nb))
+		dev_err(gmu->dev, "could not register the CX power domain notifier\n");
 
 	/*
 	 * Get a link to the GX power domain to reset the GPU in case of GMU

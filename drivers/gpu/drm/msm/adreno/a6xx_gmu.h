@@ -231,7 +231,8 @@ enum a6xx_gmu_oob_state {
 void a6xx_hfi_init(struct a6xx_gmu *gmu);
 int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state);
 void a6xx_hfi_stop(struct a6xx_gmu *gmu);
-int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu);
+void a6xx_hfi_process_debug_queue(struct a6xx_gmu *gmu);
+int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu, u32 bw, u32 freq);
 int a6xx_hfi_set_freq(struct a6xx_gmu *gmu, u32 perf_index, u32 bw_index);
 
 bool a6xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu);

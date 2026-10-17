@@ -924,11 +924,19 @@ int a6xx_hfi_set_freq(struct a6xx_gmu *gmu, u32 freq_index, u32 bw_index)
 		sizeof(msg), NULL, 0);
 }
 
-int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu)
+/*
+ * Ask the firmware to get ready for slumber at (bw, freq), indices into the
+ * bandwidth and performance tables.  The vendor fills in the current level
+ * only after it has parked the GPU at the lowest one; a6xx_gmu_notify_slumber()
+ * reaches this through the same idle check, so the zeros it passes select the
+ * level the vendor ends up asking for.
+ */
+int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu, u32 bw, u32 freq)
 {
 	struct a6xx_hfi_prep_slumber_cmd msg = { 0 };
 
-	/* TODO: should freq and bw fields be non-zero ? */
+	msg.bw = bw;
+	msg.freq = freq;
 
 	return a6xx_hfi_send_msg(gmu, HFI_H2F_MSG_PREPARE_SLUMBER, &msg,
 		sizeof(msg), NULL, 0);
@@ -976,7 +984,6 @@ int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state)
 	if (gmu->legacy)
 		return a6xx_hfi_start_v1(gmu, boot_state);
 
-
 	ret = a6xx_hfi_send_perf_table(gmu);
 	if (ret)
 		return ret;
@@ -1008,9 +1015,58 @@ int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state)
 	return 0;
 }
 
+/*
+ * Drain the firmware's debug queue (HFI queue 2), where it posts records of
+ * the form [0x64 | len << 8][code << 16 | value][ASCII function name].  The
+ * vendor does the same from its HFI interrupt handler whenever bit 2 of
+ * GMU2HOST_INTR_INFO is set; without this, the queue is never read and
+ * a6xx_hfi_stop() reports it as not empty on every shutdown.
+ */
+void a6xx_hfi_process_debug_queue(struct a6xx_gmu *gmu)
+{
+	struct a6xx_hfi_queue *queue = &gmu->queues[HFI_DEBUG_QUEUE];
+	struct a6xx_hfi_queue_header *header = queue->header;
+	u32 buf[32];
+	char text[sizeof(buf) * 4];
+	int ret;
+
+	if (!header)
+		return;
+
+	while (READ_ONCE(header->read_index) != READ_ONCE(header->write_index)) {
+		u32 hdr = queue->data[READ_ONCE(header->read_index)];
+		u32 len = HFI_HEADER_SIZE(hdr);
+		int i, n;
+
+		/* Not a record we understand; leave it for the next reader */
+		if (len > ARRAY_SIZE(buf) || len < 3)
+			break;
+
+		ret = a6xx_hfi_queue_read(gmu, queue, buf, ARRAY_SIZE(buf));
+		if (ret <= 0)
+			break;
+
+		/* NUL terminate the text: it is not guaranteed to be */
+		n = min_t(u32, len - 2, ARRAY_SIZE(buf) - 2);
+		for (i = 0; i < n; i++) {
+			text[i * 4 + 0] = buf[2 + i] >> 0;
+			text[i * 4 + 1] = buf[2 + i] >> 8;
+			text[i * 4 + 2] = buf[2 + i] >> 16;
+			text[i * 4 + 3] = buf[2 + i] >> 24;
+		}
+		text[n * 4] = '\0';
+
+		dev_dbg(gmu->dev, "GMU debug: %u %u %.72s\n",
+			 buf[1] >> 16, buf[1] & 0xffff, text);
+	}
+}
+
 void a6xx_hfi_stop(struct a6xx_gmu *gmu)
 {
 	int i;
+
+	/* Last chance to read the firmware's own records before they are reset */
+	a6xx_hfi_process_debug_queue(gmu);
 
 	for (i = 0; i < ARRAY_SIZE(gmu->queues); i++) {
 		struct a6xx_hfi_queue *queue = &gmu->queues[i];
@@ -1031,7 +1087,7 @@ void a6xx_hfi_stop(struct a6xx_gmu *gmu)
 
 static void a6xx_hfi_queue_init(struct a6xx_hfi_queue *queue,
 		struct a6xx_hfi_queue_header *header, void *virt, u64 iova,
-		u32 id)
+		u32 id, u32 pri)
 {
 	spin_lock_init(&queue->lock);
 	queue->header = header;
@@ -1043,7 +1099,8 @@ static void a6xx_hfi_queue_init(struct a6xx_hfi_queue *queue,
 
 	/* Set up the shared memory header */
 	header->iova = iova;
-	header->type =  10 << 8 | id;
+	/* The vendor packs the queue priority above the id (QUEUE_HDR_TYPE) */
+	header->type = pri << 8 | id;
 	header->status = 1;
 	header->size = SZ_4K >> 2;
 	header->msg_size = 0;
@@ -1065,38 +1122,45 @@ void a6xx_hfi_init(struct a6xx_gmu *gmu)
 	u64 offset;
 
 	/*
-	 * The table size is the size of the table header plus all of the queue
-	 * headers
+	 * Size the table for the vendor's HFI_QUEUE_HDR_MAX header slots
+	 * (HFI_QUEUE_DEFAULT_CNT 3 + HFI_QUEUE_DISPATCH_MAX_CNT 14), but declare
+	 * only the active three: the firmware writes the dispatch queues it
+	 * creates for hardware scheduling into the spare slots.  A fourth active
+	 * queue instead puts its buffer at 0x4000 of the 16 KB HFI BO, past the
+	 * allocation.  Priorities are the vendor's: 10 command/message, 40 debug.
 	 */
 	table_size = sizeof(*table);
-	table_size += (ARRAY_SIZE(gmu->queues) *
-		sizeof(struct a6xx_hfi_queue_header));
+	table_size += HFI_TABLE_QHDRS * sizeof(struct a6xx_hfi_queue_header);
 
 	table->version = 0;
 	table->size = table_size;
 	/* First queue header is located immediately after the table header */
 	table->qhdr0_offset = sizeof(*table) >> 2;
 	table->qhdr_size = sizeof(struct a6xx_hfi_queue_header) >> 2;
-	table->num_queues = ARRAY_SIZE(gmu->queues);
-	table->active_queues = ARRAY_SIZE(gmu->queues);
+	table->num_queues = HFI_ACTIVE_QUEUES;
+	table->active_queues = HFI_ACTIVE_QUEUES;
 
-	/* Command queue */
+	/* Command queue, vendor id 0 / priority 10 */
 	idx = 0;
 	offset = SZ_4K;
 	a6xx_hfi_queue_init(&gmu->queues[idx], &headers[idx], hfi->virt + offset,
-		hfi->iova + offset, 0);
+		hfi->iova + offset, 0, 10);
 
-	/* GMU response queue */
+	/* GMU response queue, vendor id 1 / priority 10 */
 	idx++;
 	offset += SZ_4K;
 	a6xx_hfi_queue_init(&gmu->queues[idx], &headers[idx], hfi->virt + offset,
-		hfi->iova + offset, gmu->legacy ? 4 : 1);
+		hfi->iova + offset, gmu->legacy ? 4 : 1, 10);
 
-	/* GMU Debug queue */
+	/* GMU Debug queue, vendor id 2 / priority 40 */
 	idx++;
 	offset += SZ_4K;
 	a6xx_hfi_queue_init(&gmu->queues[idx], &headers[idx], hfi->virt + offset,
-		hfi->iova + offset, gmu->legacy ? 5 : 2);
+		hfi->iova + offset, gmu->legacy ? 5 : 2, 40);
 
-	WARN_ON(idx >= HFI_MAX_QUEUES);
+	/* The remaining header slots belong to the firmware; leave them zero */
+	memset(&headers[idx + 1], 0,
+	       (HFI_TABLE_QHDRS - idx - 1) * sizeof(struct a6xx_hfi_queue_header));
+
+	WARN_ON(idx + 1 > HFI_ACTIVE_QUEUES);
 }

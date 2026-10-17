@@ -4,7 +4,21 @@
 #ifndef _A6XX_HFI_H_
 #define _A6XX_HFI_H_
 
-#define HFI_MAX_QUEUES 3
+/*
+ * Host-side queue array. Only HFI_ACTIVE_QUEUES queues are published in the
+ * table; the firmware on this generation polls one descriptor past them, so
+ * the array keeps a slot for it as well.
+ */
+#define HFI_MAX_QUEUES 4
+
+/*
+ * Header slots in the published table. The vendor sizes the table for
+ * HFI_QUEUE_DEFAULT_CNT (3) + HFI_QUEUE_DISPATCH_MAX_CNT (14), because the
+ * firmware writes the dispatch queues it creates for hardware scheduling into
+ * the spare slots; only HFI_ACTIVE_QUEUES of them are declared active.
+ */
+#define HFI_TABLE_QHDRS 17
+#define HFI_ACTIVE_QUEUES 3
 
 struct a6xx_hfi_queue_table_header {
 	u32 version;
@@ -53,6 +67,9 @@ struct a6xx_hfi_queue {
 
 /* THis is the incoming response queue from the GMU */
 #define HFI_RESPONSE_QUEUE 1
+
+/* The firmware's own log records, vendor queue id 2 */
+#define HFI_DEBUG_QUEUE 2
 
 #define HFI_HEADER_ID(msg) ((msg) & 0xff)
 #define HFI_HEADER_SIZE(msg) (((msg) >> 8) & 0xff)
