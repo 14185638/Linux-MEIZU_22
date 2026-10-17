@@ -428,7 +428,12 @@ int qcom_cc_really_probe(struct device *dev,
 
 put_rpm:
 	if (desc->use_rpm)
-		pm_runtime_put(dev);
+		/*
+		 * Upstream series "... GPU GX GDSC handling and IFPC ...",
+		 * patch 3/6: the probe-time runtime suspend has to complete
+		 * before this returns.
+		 */
+		pm_runtime_put_sync(dev);
 
 	return ret;
 }
