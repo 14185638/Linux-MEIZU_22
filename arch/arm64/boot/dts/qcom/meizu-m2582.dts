@@ -252,54 +252,40 @@
  */
 
 /*
- * The GPU. This board's part is an Adreno 825, chip id 0x44030000, which the
- * factory device tree names "qcom,adreno-gpu-gen8-6-0" with gpu-model
- * "Adreno825".
- *
- * The first compatible must carry the chip id as eight hex digits. Mainline's
- * find_chipid() parses either "qcom,adreno-<major>.<minor>" or
- * "qcom,adreno-<8 hex digits>" and understands nothing else, so the vendor's
- * string would send it to the legacy qcom,chipid property -- and that path
- * returns NULL from adreno_info() for this part until the a8xx catalog carries
- * an entry for 0x44030000, which now it does. Without that entry
- * adreno_has_gpu() is false, no GPU platform device is created, and the only
- * symptom is "no GPU device was found".
- *
- * Register windows come from the vendor node and are collapsed to the three
- * mainline consumes:
- *   0x3d00000 + 0x52000   the GPU block, covering CUDA 0x50000 (RSCC), which on
- *                         a8xx mainline addresses as a fixed offset inside this
- *                         same window rather than as its own region
- *   0x3d9e000 + 0x2000    cx_mem
- *   0x3d61000 + 0x3000    cx_dbgc
- * The vendor's separate qdss_gfx/qdss_etr/qdss_tmc windows are not carried
- * over: the coresight nodes already claim those addresses, and they are
- * debug-only.
- *
- * qcom,gmu is mandatory and a6xx_gpu_init() BUG_ON()s without it -- it is not
- * an optional link.
+ * Adreno 825 (chip id 0x44030000; the vendor calls it
+ * "qcom,adreno-gpu-gen8-6-0").  The first compatible must carry the chip id as
+ * eight hex digits, or find_chipid() falls back to the legacy qcom,chipid path
+ * and adreno_info() returns NULL -- the only symptom is "no GPU device was
+ * found".  Register windows are the vendor's, collapsed to the three mainline
+ * consumes (the GPU block covers RSCC at +0x50000); qcom,gmu is mandatory.
  */
 &gpu {
 	compatible = "qcom,adreno-44030000", "qcom,adreno";
 	/*
-	 * Re-enabled after the GMU got its own OPP table. The previous attempt
-	 * hung during the DRM probe and took the USB gadget with it, and the GMU
-	 * OPP error was the last thing reported before that, so this is the fix
-	 * for the step that failed.
-	 *
-	 * Note that the vendor node declares no vdd or vddcx either, so the two
-	 * "supply not found, using dummy regulator" lines are normal and were not
-	 * the cause; the vendor GMU's power domains are exactly the three
-	 * declared on &gmu (gpu_cc_cx_gdsc, gpu_cc_cx_gmu_gdsc, gx_clkctl's GX
-	 * rail), and the GPU core is parented through the GMU rather than
-	 * declaring a rail of its own.
+	 * The vendor node declares no vdd/vddcx either, so the two "supply not
+	 * found, using dummy regulator" lines are normal: the vendor GMU's power
+	 * domains are the three on &gmu, and the GPU core is parented through the
+	 * GMU rather than declaring a rail of its own.
 	 */
 	status = "okay";
 
 	operating-points-v2 = <&gpu_opp_table>;
 
+	/*
+	 * msm_devfreq_init() calls of_devfreq_cooling_register() on this node and
+	 * fails without #cooling-cells; the vendor's live tree has it too and uses
+	 * the GPU as a cooling device in its gpu-0..gpu-5 thermal zones.
+	 */
+	#cooling-cells = <2>;
 
-	reg = <0 0x03d00000 0 0x52000>,
+	/*
+	 * The first window must cover the RSCC block: a8xx has no separate "rscc"
+	 * reg, a6xx_gmu_init() takes gmu->rscc = gpu->mmio + 0x50000, and
+	 * a6xx_gmu_rpmh_off() polls TCS8 at byte 0x2228.  At 0x52000 that read fell
+	 * past the mapping during the runtime suspend that follows bring-up; 0x60000
+	 * is the vendor's own RSCC block size.
+	 */
+	reg = <0 0x03d00000 0 0x60000>,
 	      <0 0x03d9e000 0 0x2000>,
 	      <0 0x03d61000 0 0x3000>;
 	reg-names = "kgsl_3d0_reg_memory",
@@ -314,20 +300,10 @@
 	qcom,gmu = <&gmu>;
 
 	/*
-	 * GPU DVFS table. Frequencies, RPMh corner levels and ACD levels are the
-	 * vendor's own power levels from power-levels@0 of the factory device tree's
-	 * kgsl node; the highest is 1150 MHz, which is also the vendor's default
-	 * (qcom,initial-pwrlevel = 10 into an 11-entry table).
-	 *
-	 * opp-level values are the vendor's qcom,level words and each one lands exactly
-	 * on an RPMH_REGULATOR_LEVEL_* constant, which is what they are: 0x1b0 is
-	 * TURBO_L2, down to 0x38 which is LOW_SVS_D1.
-	 *
-	 * opp-peak-kBps and qcom,opp-acd-level are deliberately absent for now. The
-	 * first needs the GPU's interconnect path wired up, and the second is consumed
-	 * by the ACD code, which is a later stage. Leaving them out keeps this table to
-	 * the two things the probe needs -- a frequency to pick and a level to vote --
-	 * so that if the GPU still fails to come up the cause is not ambiguous.
+	 * GPU DVFS table: frequencies, RPMh corners and ACD levels are the vendor's
+	 * power-levels@0 from the factory kgsl node (highest 1150 MHz, its
+	 * initial-pwrlevel = 10).  opp-peak-kBps is deliberately absent until the
+	 * GPU's interconnect path is wired up.
 	 */
 	gpu_opp_table: opp-table {
 		compatible = "operating-points-v2-adreno", "operating-points-v2";
@@ -401,22 +377,22 @@
 };
 
 /*
- * The GMU. A sibling of the GPU node, not a child: the vendor tree has it at
- * 0x3d37000 and mainline looks it up through the GPU's qcom,gmu phandle, so
- * both have to be real platform devices.
- *
- * reg index 0 is what a6xx_gmu_get_mmio() maps as the GMU base; the vendor's
- * second window ("gmu_ao_blk_dec0") is not one mainline names. On a8xx mainline
- * takes RSCC as gpu->mmio + 0x50000 rather than from here, so no rscc region is
- * needed in this node.
- *
- * Power domain names follow mainline's binding: "cx", "gmu", "gx", in that
- * order, matching gpu_cc_cx_gdsc, gpu_cc_cx_gmu_gdsc and gx_clkctl_gx_gdsc.
+ * The GMU is a sibling of the GPU node, not a child: the vendor tree has it
+ * at 0x3d37000 and mainline finds it through the GPU's qcom,gmu phandle.
+ * reg index 0 is the base a6xx_gmu_get_mmio() maps; RSCC comes from the GPU
+ * window (see &gpu).  Power domains are "cx", "gmu", "gx" in that order,
+ * matching gpu_cc_cx_gdsc, gpu_cc_cx_gmu_gdsc and gx_clkctl_gx_gdsc.
  */
 &gmu {
 	compatible = "qcom,adreno-gmu-825.0", "qcom,adreno-gmu";
 	status = "okay";
 
+	/*
+	 * The "gmu_pdc" region is deliberately not declared: with it present
+	 * a6xx_gmu_rpmh_init() writes the GPU's PDC at probe (0x4520 = 0,
+	 * 0x4500 = 0x80000001) and the boot hangs right after the HFI
+	 * handshake.  The a8xx branch handles the region being absent.
+	 */
 	reg = <0 0x03d37000 0 0x68000>,
 	      <0 0x03d40000 0 0x10000>;
 	reg-names = "gmu", "gmu_ao_blk_dec0";
@@ -426,15 +402,9 @@
 	interrupt-names = "hfi", "gmu";
 
 	/*
-	 * Note "axi": GCC_DDRSS_GPU_AXI_CLK. It was missing here, and it is the
-	 * one entry in this list the vendor's GMU node has that ours did not --
-	 * the vendor's clock list is
-	 *   <&gpucc 0x05> CX_GMU, <&gpucc 0x07> CXO, <&gcc 0x12> DDRSS_GPU_AXI,
-	 *   <&gcc 0x22> GEMNOC_GFX, <&gpucc 0x02> AHB, <&gpucc 0x12> HUB_CX_INT
-	 * with names gmu_clk, cxo_clk, axi_clk, memnoc_clk, ahb_clk, hub_clk, and
-	 * sm8650's node carries the same seven clocks including "axi". Without
-	 * the GPU's AXI clock the GMU cannot reach the bus, which is consistent
-	 * with firmware loading but the M3 never reporting back.
+	 * "axi" is GCC_DDRSS_GPU_AXI_CLK, which the vendor's GMU node and
+	 * sm8650 carry: without it the GMU cannot reach the bus, so firmware
+	 * loads but the M3 never reports back.
 	 */
 	clocks = <&gpucc GPU_CC_AHB_CLK>,
 		 <&gpucc GPU_CC_CX_GMU_CLK>,
@@ -446,28 +416,22 @@
 	clock-names = "ahb", "gmu", "cxo", "axi", "memnoc", "hub", "demet";
 
 	/*
-	 * Two domains, not the three the factory device tree lists.
-	 *
-	 * The factory node says power-domain-names = "cx", "gmu_cx", "gx" with
-	 * <&gpucc 0>, <&gpucc 2>, <&gxclkctl 0>. GX is dropped here, and that
-	 * was established by experiment rather than by reading: with GX present
-	 * the board wedges on every attempt, and the wedge takes the USB
-	 * controller with it so it needs a physical power cycle. Removing it
-	 * lets the GPU reach firmware loading. That was re-tested after
-	 * gxclkctl's own node was corrected to the SoC's single CX GDSC, in
-	 * case the earlier wedge had really been that node's fault -- it still
-	 * wedged, so GX on this node is genuinely the trigger.
-	 *
-	 * The reason is visible in gdsc_gx_do_nothing_enable(): the GX rail is
-	 * not the CPU's to raise, the GMU does it, and the CPU-side GDSC exists
-	 * so power-down can force the domain really off. Listing it here tells
-	 * genpd the opposite -- that the GMU may not run until GX is up -- so
-	 * probe-time sequencing tries to raise a rail whose bring-up belongs to
-	 * firmware that has not started. GX stays out; the GMU brings it up.
+	 * Three domains, as the vendor's GMU node declares: "cx", "gmu_cx", "gx".
+	 * a6xx_gmu_init() resolves "gx" by name and mainline's a8xx power-up path is
+	 * built on it (a6xx_gmu_fw_start -> a6xx_gmu_gxpd_get raises the GX rail
+	 * before the GMU is started); with only two domains gmu->gxpd stayed NULL.
+	 */
+	/*
+	 * No RPMh rails (cx.lvl, mx.lvl) here: a6xx_gmu_init() asks only for
+	 * "cx" and "gx" by name, and declaring them makes the boot hang.  The
+	 * vendor's gen8_gmu_boot holds the CX rail across the whole power cycle
+	 * (kgsl_pwrctrl_enable_cx_gdsc .. disable_cx_gdsc), which is where they
+	 * belong -- the .supply = "vdd_cx" work.
 	 */
 	power-domains = <&gpucc GPU_CC_CX_GDSC>,
-			<&gpucc GPU_CC_CX_GMU_GDSC>;
-	power-domain-names = "cx", "gmu";
+			<&gpucc GPU_CC_CX_GMU_GDSC>,
+			<&gxclkctl GX_CLKCTL_GX_GDSC>;
+	power-domain-names = "cx", "gmu", "gx";
 
 	/*
 	 * Required, not optional: a6xx_gmu_acd_probe() sends the GPU's ACD state
@@ -482,15 +446,9 @@
 	operating-points-v2 = <&gmu_opp_table>;
 
 	/*
-	 * The GMU handles its own frequency switching and a6xx_gmu_pwrlevels_probe()
-	 * requires this table -- without it the probe fails outright ("Unable to set
-	 * the OPP table for the GMU"), which is one of the two errors that were
-	 * visible before the first power-up hang.
-	 *
-	 * Frequencies and levels are the vendor's own qcom,gmu-freq-table from the
-	 * factory GMU node: <0x1dcd6500 0x40 0x26be3680 0x80>, i.e. 500 MHz at
-	 * RPMH level 0x40 (LOW_SVS) and 650 MHz at 0x80 (SVS). The vendor boots at
-	 * the first of the pair (qcom,gpu-gmu-perf-ddr-bw sits alongside it).
+	 * a6xx_gmu_pwrlevels_probe() requires this table.  Frequencies and levels
+	 * are the vendor's qcom,gmu-freq-table <0x1dcd6500 0x40 0x26be3680 0x80>:
+	 * 500 MHz at LOW_SVS and 650 MHz at SVS.
 	 */
 	gmu_opp_table: opp-table {
 		compatible = "operating-points-v2";
